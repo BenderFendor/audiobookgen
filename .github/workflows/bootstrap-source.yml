@@ -27,6 +27,7 @@ jobs:
       - name: Reconstruct archive
         shell: bash
         run: |
+          sha256sum .bootstrap/part-*.b64
           cat .bootstrap/part-*.b64 | base64 --decode > /tmp/project.tar.gz
           echo "c57a7b55498318bdbca248155cfe7833c602d458cfb7bfa1a491a610947d4db4  /tmp/project.tar.gz" | sha256sum -c -
 
