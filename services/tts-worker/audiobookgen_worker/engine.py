@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 SAMPLE_RATE = 24_000
+VOICES = ("af_heart", "af_bella", "af_nicole", "am_adam", "am_michael", "bf_emma", "bm_george")
 
 
 class KokoroEngine:
@@ -15,13 +16,14 @@ class KokoroEngine:
         self.mock = mock
         self._pipeline = None
         self._model_dir: Path | None = None
+        self._lang_code: str | None = None
 
     def capabilities(self) -> dict[str, object]:
         return {
             "engine": "kokoro",
             "sample_rate": SAMPLE_RATE,
             "languages": ["en-us", "en-gb"],
-            "voices": ["af_heart", "af_bella", "af_nicole", "am_adam", "am_michael", "bf_emma", "bm_george"],
+            "voices": list(VOICES),
             "mock": self.mock,
         }
 
@@ -49,6 +51,8 @@ class KokoroEngine:
         model_dir: Path,
         progress: Callable[[str], None],
     ) -> tuple[int, int]:
+        if voice not in VOICES:
+            raise ValueError(f"unsupported Kokoro voice: {voice}")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if self.mock:
             progress("synthesizing")
@@ -56,12 +60,15 @@ class KokoroEngine:
 
         progress("loading")
         pipeline = self._get_pipeline(model_dir, voice)
+        voice_path = model_dir / "voices" / f"{voice}.pt"
+        if not voice_path.is_file():
+            raise RuntimeError(f"Kokoro voice is missing from the installed model: {voice}")
         progress("phonemizing")
         chunks = []
         import numpy as np
         import soundfile as sf
 
-        for _graphemes, _phonemes, audio in pipeline(text, voice=voice, speed=speed, split_pattern=r"\n+"):
+        for _graphemes, _phonemes, audio in pipeline(text, voice=str(voice_path), speed=speed, split_pattern=r"\n+"):
             chunks.append(np.asarray(audio, dtype=np.float32))
         if not chunks:
             raise RuntimeError("Kokoro produced no audio")
@@ -72,13 +79,19 @@ class KokoroEngine:
         return round(len(audio) / SAMPLE_RATE * 1000), SAMPLE_RATE
 
     def _get_pipeline(self, model_dir: Path, voice: str):
-        if self._pipeline is None or self._model_dir != model_dir:
+        lang_code = "b" if voice.startswith("b") else "a"
+        if self._pipeline is None or self._model_dir != model_dir or self._lang_code != lang_code:
             self._configure_cache(model_dir)
-            from kokoro import KPipeline
+            from kokoro import KModel, KPipeline
 
-            lang_code = "b" if voice.startswith("b") else "a"
-            self._pipeline = KPipeline(lang_code=lang_code)
+            config = model_dir / "config.json"
+            weights = model_dir / "kokoro-v1_0.pth"
+            if not config.is_file() or not weights.is_file():
+                raise RuntimeError("Kokoro model files are incomplete; download the model again")
+            model = KModel(repo_id="hexgrad/Kokoro-82M", config=str(config), model=str(weights))
+            self._pipeline = KPipeline(lang_code=lang_code, repo_id="hexgrad/Kokoro-82M", model=model)
             self._model_dir = model_dir
+            self._lang_code = lang_code
         return self._pipeline
 
     @staticmethod
