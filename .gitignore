@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+target/
+*.tsbuildinfo
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.wav
+*.m4a
+*.m4b
+*.epub
+!fixtures/*.epub
+.env
