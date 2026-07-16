@@ -15,17 +15,27 @@ pub enum WorkerRequest {
     Capabilities {
         id: String,
     },
+    ModelStatus {
+        id: String,
+        engine: String,
+        model_dir: PathBuf,
+        options: Value,
+    },
     DownloadModel {
         id: String,
+        engine: String,
         model_dir: PathBuf,
+        options: Value,
     },
     Generate {
         id: String,
+        engine: String,
         text: String,
         voice: String,
         speed: f32,
         output_path: PathBuf,
         model_dir: PathBuf,
+        options: Value,
     },
     Shutdown {
         id: String,
@@ -36,6 +46,7 @@ impl WorkerRequest {
         match self {
             Self::Ping { id }
             | Self::Capabilities { id }
+            | Self::ModelStatus { id, .. }
             | Self::DownloadModel { id, .. }
             | Self::Generate { id, .. }
             | Self::Shutdown { id } => id,
@@ -53,9 +64,17 @@ pub struct WorkerResponse {
     #[serde(default)]
     pub message: Option<String>,
     #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub current: Option<u64>,
+    #[serde(default)]
+    pub total: Option<u64>,
+    #[serde(default)]
     pub duration_ms: Option<u64>,
     #[serde(default)]
     pub sample_rate: Option<u32>,
+    #[serde(default)]
+    pub word_timings: Vec<crate::model::WordTiming>,
     #[serde(default)]
     pub payload: Value,
 }
@@ -122,6 +141,16 @@ impl WorkerSupervisor {
     }
 
     pub async fn request(&self, request: WorkerRequest) -> Result<WorkerResponse> {
+        self.request_with_progress(request, |_| {}).await
+    }
+
+    /// Like [`request`], but hands every intermediate progress response to
+    /// `on_progress` so callers can surface download and synthesis progress.
+    pub async fn request_with_progress(
+        &self,
+        request: WorkerRequest,
+        on_progress: impl Fn(&WorkerResponse),
+    ) -> Result<WorkerResponse> {
         let _gate = self.request_gate.lock().await;
         let request_id = request.id().to_owned();
         let mut encoded = serde_json::to_vec(&request)?;
@@ -150,12 +179,17 @@ impl WorkerSupervisor {
                 continue;
             }
             match response.response_type.as_str() {
-                "progress" => continue,
-                "error" => bail!(
-                    response
+                "progress" => {
+                    on_progress(&response);
+                    continue;
+                }
+                "error" => {
+                    let message = response
                         .message
-                        .unwrap_or_else(|| "Kokoro worker failed".into())
-                ),
+                        .unwrap_or_else(|| "narration worker failed".into());
+                    let code = response.code.unwrap_or_else(|| "worker_failure".into());
+                    bail!("[{code}] {message}")
+                }
                 "ready" | "complete" => return Ok(response),
                 other => bail!("unexpected worker response type: {other}"),
             }

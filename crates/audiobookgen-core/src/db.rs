@@ -1,6 +1,6 @@
 use crate::model::{
     BookDetail, BookSummary, Chapter, Fragment, GeneratedSegment, NarrationProfile, ProgressState,
-    PronunciationRule,
+    PronunciationRule, WordTiming,
 };
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
@@ -103,7 +103,41 @@ impl LibraryDatabase {
               case_sensitive INTEGER NOT NULL,
               created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS settings (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
             "#,
+        )?;
+        add_column_if_missing(
+            &connection,
+            "profiles",
+            "engine",
+            "TEXT NOT NULL DEFAULT 'kokoro'",
+        )?;
+        add_column_if_missing(
+            &connection,
+            "generated_segments",
+            "word_timings_json",
+            "TEXT",
+        )?;
+        Ok(())
+    }
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let connection = self.lock()?;
+        Ok(connection
+            .query_row("SELECT value FROM settings WHERE key=?1", [key], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()?)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        let connection = self.lock()?;
+        connection.execute(
+            "INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, value],
         )?;
         Ok(())
     }
@@ -245,12 +279,12 @@ impl LibraryDatabase {
     ) -> Result<Option<GeneratedSegment>> {
         let connection = self.lock()?;
         let row = connection.query_row(
-            "SELECT cache_key,audio_path,duration_ms,sample_rate,created_at FROM generated_segments WHERE fragment_id=?1 AND profile_id=?2",
+            "SELECT cache_key,audio_path,duration_ms,sample_rate,word_timings_json,created_at FROM generated_segments WHERE fragment_id=?1 AND profile_id=?2",
             params![fragment_id.to_string(), profile_id.to_string()],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, String>(4)?)),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, Option<String>>(4)?, row.get::<_, String>(5)?)),
         ).optional()?;
         row.map(
-            |(cache_key, audio_path, duration_ms, sample_rate, created_at)| {
+            |(cache_key, audio_path, duration_ms, sample_rate, word_timings, created_at)| {
                 Ok(GeneratedSegment {
                     fragment_id,
                     profile_id,
@@ -258,6 +292,7 @@ impl LibraryDatabase {
                     audio_path: PathBuf::from(audio_path),
                     duration_ms: duration_ms as u64,
                     sample_rate: sample_rate as u32,
+                    word_timings: parse_word_timings(word_timings.as_deref()),
                     created_at: parse_datetime(&created_at)?,
                 })
             },
@@ -268,9 +303,11 @@ impl LibraryDatabase {
     pub fn save_generated_segment(&self, segment: &GeneratedSegment) -> Result<()> {
         let connection = self.lock()?;
         connection.execute(
-            "INSERT INTO generated_segments (fragment_id,profile_id,cache_key,audio_path,duration_ms,sample_rate,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)
-             ON CONFLICT(fragment_id,profile_id) DO UPDATE SET cache_key=excluded.cache_key,audio_path=excluded.audio_path,duration_ms=excluded.duration_ms,sample_rate=excluded.sample_rate,created_at=excluded.created_at",
-            params![segment.fragment_id.to_string(), segment.profile_id.to_string(), segment.cache_key, segment.audio_path.to_string_lossy(), segment.duration_ms as i64, segment.sample_rate as i64, segment.created_at.to_rfc3339()],
+            "INSERT INTO generated_segments (fragment_id,profile_id,cache_key,audio_path,duration_ms,sample_rate,word_timings_json,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+             ON CONFLICT(fragment_id,profile_id) DO UPDATE SET cache_key=excluded.cache_key,audio_path=excluded.audio_path,duration_ms=excluded.duration_ms,sample_rate=excluded.sample_rate,word_timings_json=excluded.word_timings_json,created_at=excluded.created_at",
+            params![segment.fragment_id.to_string(), segment.profile_id.to_string(), segment.cache_key, segment.audio_path.to_string_lossy(), segment.duration_ms as i64, segment.sample_rate as i64,
+                if segment.word_timings.is_empty() { None } else { Some(serde_json::to_string(&segment.word_timings)?) },
+                segment.created_at.to_rfc3339()],
         )?;
         connection.execute(
             "UPDATE books SET updated_at=?1 WHERE id=(SELECT book_id FROM fragments WHERE id=?2)",
@@ -435,29 +472,31 @@ fn query_chapters(connection: &Connection, book_id: Uuid) -> Result<Vec<Chapter>
 }
 
 fn query_profiles(connection: &Connection, book_id: Uuid) -> Result<Vec<NarrationProfile>> {
-    let mut statement = connection.prepare("SELECT id,name,voice,speed,model_revision,model_sha256,normalization_version,planner_version,created_at FROM profiles WHERE book_id=?1 ORDER BY created_at")?;
+    let mut statement = connection.prepare("SELECT id,name,engine,voice,speed,model_revision,model_sha256,normalization_version,planner_version,created_at FROM profiles WHERE book_id=?1 ORDER BY created_at")?;
     let raw = statement
         .query_map([book_id.to_string()], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, f64>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, String>(6)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, f64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
                 row.get::<_, String>(7)?,
                 row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     raw.into_iter()
         .map(
-            |(id, name, voice, speed, revision, sha, normalization, planner, created)| {
+            |(id, name, engine, voice, speed, revision, sha, normalization, planner, created)| {
                 Ok(NarrationProfile {
                     id: Uuid::parse_str(&id)?,
                     book_id,
                     name,
+                    engine,
                     voice,
                     speed: speed as f32,
                     model_revision: revision,
@@ -484,10 +523,35 @@ fn query_fragments(connection: &Connection, sql: &str, value: String) -> Result<
 
 fn insert_profile_row(connection: &Connection, profile: &NarrationProfile) -> Result<()> {
     connection.execute(
-        "INSERT INTO profiles (id,book_id,name,voice,speed,model_revision,model_sha256,normalization_version,planner_version,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        params![profile.id.to_string(), profile.book_id.to_string(), profile.name, profile.voice, profile.speed as f64, profile.model_revision, profile.model_sha256, profile.normalization_version, profile.planner_version, profile.created_at.to_rfc3339()],
+        "INSERT INTO profiles (id,book_id,name,engine,voice,speed,model_revision,model_sha256,normalization_version,planner_version,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        params![profile.id.to_string(), profile.book_id.to_string(), profile.name, profile.engine, profile.voice, profile.speed as f64, profile.model_revision, profile.model_sha256, profile.normalization_version, profile.planner_version, profile.created_at.to_rfc3339()],
     )?;
     Ok(())
+}
+
+fn add_column_if_missing(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<()> {
+    let exists: bool = connection.query_row(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info(?1) WHERE name=?2",
+        params![table, column],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        connection.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+        ))?;
+    }
+    Ok(())
+}
+
+fn parse_word_timings(payload: Option<&str>) -> Vec<WordTiming> {
+    payload
+        .and_then(|value| serde_json::from_str(value).ok())
+        .unwrap_or_default()
 }
 
 fn parse_datetime(value: &str) -> Result<DateTime<Utc>> {

@@ -1,0 +1,22 @@
+{
+  "command": [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "/home/bender/.local/share/io.audiobookgen.desktop/worker-venv/bin/python",
+    "--upgrade",
+    "--force-reinstall",
+    "--no-cache-dir",
+    "llama-cpp-python>=0.3.2"
+  ],
+  "cwd": "/home/bender/projects/audiobookgen",
+  "duration_seconds": 569.091,
+  "max_rss_kb": 853228,
+  "returncode": 0,
+  "stderr_tail": "Using Python 3.12.12 environment at: /home/bender/.local/share/io.audiobookgen.desktop/worker-venv\nResolved 6 packages in 2.45s\n   Building llama-cpp-python==0.3.34\nDownloading numpy (15.9MiB)\n Downloaded numpy\n      Built llama-cpp-python==0.3.34\nPrepared 6 packages in 9m 25s\nUninstalled 6 packages in 169ms\nwarning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.\n         If the cache and target directories are on different filesystems, hardlinking may not be supported.\n         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.\nInstalled 6 packages in 328ms\n ~ diskcache==5.6.3\n ~ jinja2==3.1.6\n ~ llama-cpp-python==0.3.34\n ~ markupsafe==3.0.3\n ~ numpy==2.5.1\n ~ typing-extensions==4.16.0",
+  "stdout_tail": "",
+  "timed_out": false,
+  "verdict": "success",
+  "warnings": []
+}

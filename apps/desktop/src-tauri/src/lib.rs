@@ -1,5 +1,6 @@
 mod commands;
 mod platform;
+mod voxtral;
 
 use commands::AppRuntime;
 use tauri::{
@@ -58,8 +59,12 @@ pub fn run() {
             commands::save_pronunciation_rule,
             commands::save_progress,
             commands::load_progress,
-            commands::model_status,
-            commands::download_model,
+            commands::list_engine_status,
+            commands::download_engine_model,
+            commands::stop_voxtral_runtime,
+            commands::get_app_settings,
+            commands::update_app_settings,
+            commands::get_generated_segment,
             commands::preview_voice,
             commands::queue_generation,
             commands::cancel_generation,

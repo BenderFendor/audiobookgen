@@ -1,0 +1,15 @@
+{
+  "command": [
+    "npm",
+    "test"
+  ],
+  "cwd": "/home/bender/projects/audiobookgen",
+  "duration_seconds": 1.144,
+  "max_rss_kb": 140144,
+  "returncode": 0,
+  "stderr_tail": "(node:4161417) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.\n(Use `node --trace-warnings ...` to show where the warning was created)",
+  "stdout_tail": "\n> audiobookgen@0.1.0 test\n> vitest run\n\n\n RUN  v3.2.7 /home/bender/projects/audiobookgen\n\n \u2713 src/lib/voices.test.ts (6 tests) 8ms\n \u2713 src/lib/import-selection.test.ts (3 tests) 5ms\n \u2713 src/lib/tauri.test.ts (5 tests) 12ms\n \u2713 src/lib/reader.test.ts (3 tests) 5ms\n\n Test Files  4 passed (4)\n      Tests  17 passed (17)\n   Start at  08:21:18\n   Duration  540ms (transform 135ms, setup 0ms, collect 269ms, tests 29ms, environment 1ms, prepare 457ms)\n",
+  "timed_out": false,
+  "verdict": "success",
+  "warnings": []
+}

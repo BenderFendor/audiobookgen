@@ -1,4 +1,4 @@
-use crate::model::{BookDetail, Fragment, GeneratedSegment, NarrationProfile};
+use crate::model::{BookDetail, Fragment, FragmentKind, GeneratedSegment, NarrationProfile};
 use anyhow::{Context, Result, anyhow, bail};
 use regex::Regex;
 use roxmltree::Document;
@@ -242,18 +242,30 @@ pub fn export_narrated_epub(
 }
 
 fn render_chapter_wav(chapter: &ExportChapter, output: &Path) -> Result<()> {
+    let sample_rate = output_sample_rate(
+        chapter
+            .fragments
+            .iter()
+            .map(|item| (&item.fragment.kind, item.segment.sample_rate)),
+    );
     let spec = hound::WavSpec {
         channels: 1,
-        sample_rate: 24_000,
+        sample_rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(output, spec)?;
     for item in &chapter.fragments {
+        if item.fragment.kind == FragmentKind::SceneBreak {
+            for _ in 0..item.segment.duration_ms * u64::from(sample_rate) / 1_000 {
+                writer.write_sample(0i16)?;
+            }
+            continue;
+        }
         let mut reader = hound::WavReader::open(&item.segment.audio_path)
             .with_context(|| format!("reading {}", item.segment.audio_path.display()))?;
         let input = reader.spec();
-        if input.channels != 1 || input.sample_rate != 24_000 || input.bits_per_sample != 16 {
+        if input.channels != 1 || input.sample_rate != sample_rate || input.bits_per_sample != 16 {
             bail!(
                 "generated segment has unsupported WAV format: {}",
                 item.segment.audio_path.display()
@@ -262,7 +274,7 @@ fn render_chapter_wav(chapter: &ExportChapter, output: &Path) -> Result<()> {
         for sample in reader.samples::<i16>() {
             writer.write_sample(sample?)?;
         }
-        for _ in 0..(u64::from(item.fragment.pause_after_ms) * 24) {
+        for _ in 0..u64::from(item.fragment.pause_after_ms) * u64::from(sample_rate) / 1_000 {
             writer.write_sample(0i16)?;
         }
     }
@@ -271,26 +283,57 @@ fn render_chapter_wav(chapter: &ExportChapter, output: &Path) -> Result<()> {
 }
 
 fn render_book_wav(manifest: &ExportManifest, output: &Path) -> Result<()> {
+    let sample_rate = output_sample_rate(
+        manifest
+            .chapters
+            .iter()
+            .flat_map(|chapter| &chapter.fragments)
+            .map(|item| (&item.fragment.kind, item.segment.sample_rate)),
+    );
     let spec = hound::WavSpec {
         channels: 1,
-        sample_rate: 24_000,
+        sample_rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(output, spec)?;
     for chapter in &manifest.chapters {
         for item in &chapter.fragments {
+            if item.fragment.kind == FragmentKind::SceneBreak {
+                for _ in 0..item.segment.duration_ms * u64::from(sample_rate) / 1_000 {
+                    writer.write_sample(0i16)?;
+                }
+                continue;
+            }
             let mut reader = hound::WavReader::open(&item.segment.audio_path)?;
+            let input = reader.spec();
+            if input.channels != 1
+                || input.sample_rate != sample_rate
+                || input.bits_per_sample != 16
+            {
+                bail!(
+                    "generated segment has unsupported WAV format: {}",
+                    item.segment.audio_path.display()
+                );
+            }
             for sample in reader.samples::<i16>() {
                 writer.write_sample(sample?)?;
             }
-            for _ in 0..(u64::from(item.fragment.pause_after_ms) * 24) {
+            for _ in 0..u64::from(item.fragment.pause_after_ms) * u64::from(sample_rate) / 1_000 {
                 writer.write_sample(0i16)?;
             }
         }
     }
     writer.finalize()?;
     Ok(())
+}
+
+fn output_sample_rate<'a>(segments: impl Iterator<Item = (&'a FragmentKind, u32)>) -> u32 {
+    segments
+        .filter(|(kind, _)| **kind != FragmentKind::SceneBreak)
+        .map(|(_, sample_rate)| sample_rate)
+        .next()
+        .unwrap_or(24_000)
 }
 
 fn render_smil(chapter: &ExportChapter, audio_href: &str, duration_ms: u64) -> String {
@@ -528,4 +571,21 @@ fn xml_escape_text(value: &str) -> String {
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_rate_ignores_a_legacy_scene_break_rate() {
+        let segments = [
+            (FragmentKind::SceneBreak, 24_000),
+            (FragmentKind::Sentence, 48_000),
+        ];
+        assert_eq!(
+            output_sample_rate(segments.iter().map(|(kind, rate)| (kind, *rate))),
+            48_000
+        );
+    }
 }

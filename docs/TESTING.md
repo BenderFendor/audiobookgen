@@ -17,6 +17,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo check -p audiobookgen-desktop
 ```
 
+Frontend regression coverage includes:
+
+- `src/lib/reader.test.ts`: sentence ranges inside one paragraph, repeated text, and whitespace around EPUB drop caps or inline markup.
+- `src/lib/tauri.test.ts`: Tauri detection, asset paths, and explicit WAV Blob creation for WebKit playback.
+- `services/tts-worker/tests/test_progress.py`: structured progress events with and without byte totals.
+- `services/tts-worker/tests/test_voxtral_int4.py`: 24-to-48 kHz propagation, WAV header duration, CFG profile safety, and traversal rejection.
+- `apps/desktop/src-tauri/src/voxtral.rs` unit tests: NVIDIA status parsing, compute capability, and the measured 12 GB gate.
+
 The mock worker must remain dependency-light. It verifies the persistent JSON Lines protocol and valid 24 kHz WAV output without downloading Kokoro or importing PyTorch.
 
 ## EPUB fixture matrix
@@ -54,6 +62,14 @@ The English corpus should include names, initials, abbreviations, dates, times, 
 
 ## Audio checks
 
+Inspect generated sentence signal levels with:
+
+```bash
+python3 scripts/check_audio_levels.py --require-signal
+```
+
+The report labels each 16-bit PCM WAV as `OK`, `LOW`, or `SILENT` and prints duration, RMS level, and peak level in dBFS. Pass file paths to inspect a smaller set.
+
 The official Kokoro backend is evaluated separately from the deterministic mock worker. Release candidates should record:
 
 - time to first playable sentence
@@ -90,3 +106,5 @@ missing, so CI stays on the mock E2E). It catches import-time breakage in the
 kokoro dependency chain that the mock path cannot see. Run it after any change
 to `services/tts-worker/pyproject.toml` or the worker bootstrap in
 `apps/desktop/src-tauri/src/commands.rs`.
+
+Voxtral release verification requires a Linux NVIDIA host with 12 GB VRAM and compute capability 8.0 or newer. Run `services/tts-worker/scripts/benchmark_voxtral.py` with the installed model, confirm a mono 48 kHz WAV, CFG 1.2, finite signal, correct duration metadata, bounded startup/inference memory, repeated-generation cache reset, and worker shutdown that releases VRAM. GPU tests are hardware-gated and never replaced with mock-generation claims.

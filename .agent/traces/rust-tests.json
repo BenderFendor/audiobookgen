@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "audiobookgen-core",
+    "--all-targets"
+  ],
+  "cwd": "/home/bender/projects/audiobookgen",
+  "duration_seconds": 2.853,
+  "max_rss_kb": 221564,
+  "returncode": 0,
+  "stderr_tail": "    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n   Compiling audiobookgen-core v0.1.0 (/home/bender/projects/audiobookgen/crates/audiobookgen-core)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.67s\n     Running unittests src/lib.rs (target/debug/deps/audiobookgen_core-dd5d61a649c9535d)\n     Running tests/cache_profiles.rs (target/debug/deps/cache_profiles-3cc74be16102598a)\n     Running tests/epub_pipeline.rs (target/debug/deps/epub_pipeline-2405b19ac82b4856)",
+  "stdout_tail": "\nrunning 7 tests\ntest epub::tests::joins_paths_without_escaping_root ... ok\ntest narration::tests::keeps_abbreviations_together ... ok\ntest narration::tests::separates_dialogue ... ok\ntest epub::tests::ignores_font_obfuscation ... ok\ntest epub::tests::counts_footnote_elements_once_each ... ok\ntest normalize::tests::expands_roman_chapters ... ok\ntest normalize::tests::expands_bookish_text ... ok\n\ntest result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n\n\nrunning 2 tests\ntest cache_key_changes_with_spoken_pronunciation ... ok\ntest cache_key_changes_with_voice_and_speed ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 1 test\ntest inspects_and_plans_reflowable_and_fixed_epub_content ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s\n",
+  "timed_out": false,
+  "verdict": "success",
+  "warnings": []
+}

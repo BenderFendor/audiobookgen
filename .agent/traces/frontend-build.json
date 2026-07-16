@@ -1,0 +1,16 @@
+{
+  "command": [
+    "npm",
+    "run",
+    "build"
+  ],
+  "cwd": "/home/bender/projects/audiobookgen",
+  "duration_seconds": 6.085,
+  "max_rss_kb": 716004,
+  "returncode": 0,
+  "stderr_tail": "(node:3839513) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.\n(Use `node --trace-warnings ...` to show where the warning was created)",
+  "stdout_tail": "\n> audiobookgen@0.1.0 build\n> node scripts/next.mjs build\n\n\u25b2 Next.js 16.2.10 (Turbopack)\n\n  Creating an optimized production build ...\n\u2713 Compiled successfully in 2.1s\n  Running TypeScript ...\n  Finished TypeScript in 2.3s ...\n  Collecting page data using 5 workers ...\n  Generating static pages using 5 workers (0/4) ...\n  Generating static pages using 5 workers (1/4) \n  Generating static pages using 5 workers (2/4) \n  Generating static pages using 5 workers (3/4) \n\u2713 Generating static pages using 5 workers (4/4) in 381ms\n  Finalizing page optimization ...\n\nRoute (app)\n\u250c \u25cb /\n\u251c \u25cb /_not-found\n\u2514 \u25cb /icon.svg\n\n\n\u25cb  (Static)  prerendered as static content\n",
+  "timed_out": false,
+  "verdict": "success",
+  "warnings": []
+}

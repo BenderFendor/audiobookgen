@@ -3,13 +3,11 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EpubReader, type ReaderFlow } from "@/lib/reader";
-import { api, mediaUrl } from "@/lib/tauri";
-import type { BookDetail, Fragment, GenerationProgress, NarrationProfile, ProgressState } from "@/lib/types";
-
-const voices = [
-  ["af_heart", "Heart · US"], ["af_bella", "Bella · US"], ["af_nicole", "Nicole · US"],
-  ["am_adam", "Adam · US"], ["am_michael", "Michael · US"], ["bf_emma", "Emma · UK"], ["bm_george", "George · UK"],
-] as const;
+import { api, wavObjectUrl } from "@/lib/tauri";
+import {
+  ENGINE_LABELS, KOKORO_VOICES, VOXTRAL_PRESET_VOICES, estimateWordTimings, kokoroVoiceLabel, voiceSummary, wordIndexAt,
+} from "@/lib/voices";
+import type { BookDetail, CreateNarrationProfile, Fragment, GenerationProgress, NarrationProfile, ProgressState, TtsEngine, WordTiming } from "@/lib/types";
 
 interface Props {
   book: BookDetail;
@@ -22,6 +20,8 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const readerRef = useRef<EpubReader | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioObjectUrlRef = useRef<string | null>(null);
+  const playbackRequestRef = useRef(0);
   const currentFragmentRef = useRef<string | null>(null);
   const linkedRef = useRef(true);
   const resumeRef = useRef<ProgressState | null>(null);
@@ -34,9 +34,20 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [durationSeconds, setDurationSeconds] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [contextMenu, setContextMenu] = useState<{ fragmentId: string; x: number; y: number } | null>(null);
+  const [profileDraft, setProfileDraft] = useState<CreateNarrationProfile | null>(null);
+  const wordTimingsRef = useRef<WordTiming[]>([]);
   const activeChapter = useMemo(() => book.chapters.find((chapter) => chapter.index === chapterIndex) ?? book.chapters[0], [book.chapters, chapterIndex]);
   useEffect(() => { currentFragmentRef.current = currentFragmentId; }, [currentFragmentId]);
   useEffect(() => { linkedRef.current = linked; }, [linked]);
+  useEffect(() => () => {
+    audioRef.current?.pause();
+    if (audioObjectUrlRef.current) URL.revokeObjectURL(audioObjectUrlRef.current);
+  }, []);
 
   const activeProfile = useMemo(() => book.profiles.find((profile) => profile.id === profileId) ?? book.profiles[0], [book.profiles, profileId]);
 
@@ -61,15 +72,34 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
     }).then(async () => {
       const progress = await api.loadProgress(book.summary.id).catch(() => null);
       if (progress?.reading_locator) await reader.goTo(progress.reading_locator);
-      if (progress) { setLinked(progress.linked); setCurrentFragmentId(progress.listening_fragment_id ?? null); resumeRef.current = progress; }
+      if (progress) {
+        const resumedChapter = progress.reading_locator
+          ? book.chapters.find((chapter) => chapter.href.split("#")[0] === progress.reading_locator?.href.split("#")[0])
+          : null;
+        if (resumedChapter) setChapterIndex(resumedChapter.index);
+        setLinked(progress.linked);
+        setCurrentFragmentId(progress.listening_fragment_id ?? null);
+        resumeRef.current = progress;
+      }
     }).catch((error) => setMessage(String(error)));
     return () => { reader.destroy(); readerRef.current = null; };
     // Opening a new book or changing flow must rebuild the rendition.
   }, [book.summary.id, book.summary.source_path, flow]);
 
   useEffect(() => {
-    readerRef.current?.setFragments(fragments, (fragmentId) => { void playFragment(fragmentId); });
+    readerRef.current?.setFragments(
+      fragments,
+      (fragmentId) => { setContextMenu(null); void playFragment(fragmentId); },
+      (event) => setContextMenu(event),
+    );
   }, [fragments, profileId]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const dismiss = () => setContextMenu(null);
+    window.addEventListener("click", dismiss);
+    return () => window.removeEventListener("click", dismiss);
+  }, [contextMenu]);
 
   useEffect(() => {
     readerRef.current?.setCurrent(currentFragmentId);
@@ -106,31 +136,96 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
     }
   }, [generation, book.summary.id, onRefresh]);
 
-  const playFragment = async (fragmentId: string) => {
+  const playFragment = async (fragmentId: string, options?: { single?: boolean }) => {
     if (!activeProfile) return;
+    const requestId = ++playbackRequestRef.current;
     const index = fragments.findIndex((fragment) => fragment.id === fragmentId);
-    const path = await api.generatedAudio(fragmentId, activeProfile.id);
-    if (!path) {
+    const segment = await api.generatedSegment(fragmentId, activeProfile.id);
+    if (requestId !== playbackRequestRef.current) return;
+    if (!segment) {
       setMessage("This sentence is not generated yet. Start generate while reading.");
       return;
     }
+    const path = segment.audio_path;
+    const fragmentText = fragments[index]?.source_text ?? "";
+    wordTimingsRef.current = segment.word_timings.length
+      ? segment.word_timings
+      : estimateWordTimings(fragmentText, segment.duration_ms);
     audioRef.current?.pause();
-    const audio = new Audio(mediaUrl(path));
+    if (audioObjectUrlRef.current) URL.revokeObjectURL(audioObjectUrlRef.current);
+    let objectUrl: string;
+    try {
+      objectUrl = await wavObjectUrl(path);
+    } catch (error) {
+      setMessage(`Generated audio could not be loaded: ${String(error)}`);
+      return;
+    }
+    if (requestId !== playbackRequestRef.current) {
+      URL.revokeObjectURL(objectUrl);
+      return;
+    }
+    audioObjectUrlRef.current = objectUrl;
+    const audio = new Audio(objectUrl);
+    audio.volume = volume;
     audioRef.current = audio;
+    setElapsedSeconds(0);
+    setDurationSeconds(0);
     setCurrentFragmentId(fragmentId);
     if (linkedRef.current) await readerRef.current?.goTo(fragments[index]?.locator ?? { href: activeChapter?.href ?? "", cfi: null, css_selector: null, text_occurrence: 0, source_text_hash: "" });
     const resume = resumeRef.current;
     if (resume?.listening_fragment_id === fragmentId && resume.listening_offset_ms > 0) {
       audio.addEventListener("loadedmetadata", () => { audio.currentTime = Math.min(audio.duration || Infinity, resume.listening_offset_ms / 1000); resumeRef.current = null; }, { once: true });
     }
+    audio.onloadedmetadata = () => setDurationSeconds(Number.isFinite(audio.duration) ? audio.duration : 0);
+    audio.onplay = () => setIsPlaying(true);
+    audio.onpause = () => setIsPlaying(false);
+    audio.onerror = () => {
+      setIsPlaying(false);
+      setMessage("The generated sentence could not be played. Check the desktop audio output and restart playback.");
+    };
     audio.onended = () => {
+      setIsPlaying(false);
+      readerRef.current?.setActiveWord(-1);
+      if (options?.single) return;
       const next = fragments[index + 1];
       if (next) void playFragment(next.id);
     };
     audio.ontimeupdate = () => {
+      setElapsedSeconds(audio.currentTime);
+      const reader = readerRef.current;
+      if (reader) {
+        reader.setActiveWord(wordIndexAt(wordTimingsRef.current, audio.currentTime * 1000, reader.wordCount()));
+      }
       api.saveProgress({ book_id: book.summary.id, reading_locator: null, listening_fragment_id: fragmentId, listening_offset_ms: Math.round(audio.currentTime * 1000), linked: linkedRef.current }).catch(() => undefined);
     };
-    await audio.play();
+    try {
+      await audio.play();
+    } catch (error) {
+      setMessage(`Playback could not start: ${String(error)}`);
+    }
+  };
+
+  const togglePlayback = () => {
+    const audio = audioRef.current;
+    if (audio) {
+      if (audio.paused) void audio.play().catch((error) => setMessage(`Playback could not resume: ${String(error)}`));
+      else audio.pause();
+      return;
+    }
+    const target = currentFragmentId ?? fragments[0]?.id;
+    if (target) void playFragment(target);
+  };
+
+  const seek = (seconds: number) => {
+    const audio = audioRef.current;
+    if (!audio || !Number.isFinite(seconds)) return;
+    audio.currentTime = Math.min(Math.max(seconds, 0), audio.duration || seconds);
+    setElapsedSeconds(audio.currentTime);
+  };
+
+  const changeVolume = (nextVolume: number) => {
+    setVolume(nextVolume);
+    if (audioRef.current) audioRef.current.volume = nextVolume;
   };
 
   const generate = async (mode: "current_and_next" | "full_book") => {
@@ -155,14 +250,23 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
     await onRefresh();
   };
 
-  const addProfile = async () => {
-    const name = window.prompt("Narration profile name", "Alternate narrator");
-    if (!name) return;
-    const voice = window.prompt("Kokoro voice", "bf_emma") || "bf_emma";
-    const speed = Number(window.prompt("Narration speed (0.5–2.0)", "1.0") || "1");
-    const profile = await api.createProfile(book.summary.id, { name, voice, speed });
-    await onRefresh();
-    setProfileId(profile.id);
+  const submitProfile = async () => {
+    if (!profileDraft) return;
+    try {
+      const profile = await api.createProfile(book.summary.id, profileDraft);
+      setProfileDraft(null);
+      await onRefresh();
+      setProfileId(profile.id);
+    } catch (error) { setMessage(String(error)); }
+  };
+
+  const draftEngineChanged = (engine: TtsEngine) => {
+    setProfileDraft((draft) => draft && {
+      ...draft,
+      engine,
+      voice: engine === "kokoro" ? "af_heart" : engine === "voxtral" ? "neutral_female" : "Adult narrator, neutral accent, warm and clear",
+      speed: engine === "voxtral" ? 1.0 : draft.speed,
+    });
   };
 
   const correctPronunciation = async () => {
@@ -238,11 +342,11 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
         <label className="field">Narrator
           <select value={activeProfile?.id ?? ""} onChange={(event) => void changeProfile(event.target.value)}>
             {book.profiles.map((profile: NarrationProfile) => (
-              <option key={profile.id} value={profile.id}>{profile.name} · {voices.find(([voice]) => voice === profile.voice)?.[1] ?? profile.voice}</option>
+              <option key={profile.id} value={profile.id}>{profile.name} · {ENGINE_LABELS[profile.engine]} · {voiceSummary(profile.engine, profile.voice)}</option>
             ))}
           </select>
         </label>
-        <button className="text-button" onClick={() => void addProfile()}>+ New narrator profile</button>
+        <button className="text-button" onClick={() => setProfileDraft({ name: "Alternate narrator", engine: "kokoro", voice: "af_heart", speed: 1.0 })}>+ New narrator profile</button>
         <div className="generation-actions">
           <button className="primary-button" disabled={busy === "generation" || generating} onClick={() => void generate("current_and_next")}>Generate while reading</button>
           <button className="secondary-button" disabled={busy === "generation" || generating} onClick={() => void generate("full_book")}>Generate full book</button>
@@ -250,7 +354,10 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
         </div>
         <div className="chapter-list" aria-label="Chapters">
           {book.chapters.map((chapter) => (
-            <button key={chapter.id} className={chapter.index === chapterIndex ? "active" : ""} onClick={() => setChapterIndex(chapter.index)}>
+            <button key={chapter.id} className={chapter.index === chapterIndex ? "active" : ""} onClick={() => {
+              setChapterIndex(chapter.index);
+              void readerRef.current?.goTo({ href: chapter.href, cfi: null, css_selector: null, text_occurrence: 0, source_text_hash: "" });
+            }}>
               <span className="chapter-number">{String(chapter.index + 1).padStart(2, "0")}</span>
               <strong>{chapter.title}</strong>
               <small>{chapter.fragment_count} sentences{chapter.selected ? "" : " · skipped"}</small>
@@ -274,13 +381,28 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
         </header>
         {message && <div className="studio-message">{message}<button onClick={() => setMessage(null)}>×</button></div>}
         <div className="reader-frame" ref={containerRef} />
+        {contextMenu && (
+          <div className="context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+            <button role="menuitem" onClick={() => { setContextMenu(null); void playFragment(contextMenu.fragmentId); }}>Listen from here</button>
+            <button role="menuitem" onClick={() => { setContextMenu(null); void playFragment(contextMenu.fragmentId, { single: true }); }}>Listen to this sentence</button>
+            <button role="menuitem" onClick={() => { setCurrentFragmentId(contextMenu.fragmentId); setContextMenu(null); void correctPronunciation(); }}>Fix pronunciation…</button>
+          </div>
+        )}
         <footer className="transport-bar">
-          <button className="play-button" aria-label="Play current sentence" onClick={() => { const target = currentFragmentId ?? fragments[0]?.id; if (target) void playFragment(target); }}>▶</button>
+          <button className="play-button" aria-label={isPlaying ? "Pause narration" : "Play narration"} onClick={togglePlayback}>{isPlaying ? "Ⅱ" : "▶"}</button>
           <div>
             <strong>{activeChapter?.title ?? "No chapter"}</strong>
             <small>{currentFragment?.source_text ?? "Click a sentence in the book to play it."}</small>
+            <div className="playback-status">
+              <span>{formatTime(elapsedSeconds)}</span>
+              <input aria-label="Sentence playback position" type="range" min="0" max={Math.max(durationSeconds, 0.01)} step="0.01" value={Math.min(elapsedSeconds, Math.max(durationSeconds, 0.01))} onChange={(event) => seek(Number(event.target.value))} />
+              <span>{formatTime(durationSeconds)}</span>
+            </div>
           </div>
-          <button className="text-button" onClick={() => void correctPronunciation()}>Fix pronunciation</button>
+          <div className="transport-actions">
+            <label>Output {Math.round(volume * 100)}%<input aria-label="Narration output volume" type="range" min="0" max="1" step="0.05" value={volume} onChange={(event) => changeVolume(Number(event.target.value))} /></label>
+            <button className="text-button" onClick={() => void correctPronunciation()}>Fix pronunciation</button>
+          </div>
         </footer>
       </section>
       <aside className="export-drawer">
@@ -291,6 +413,55 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
         <button disabled={busy === "epub"} onClick={() => void exportBook("epub")}>Narrated EPUB 3<span>Read-along book with embedded audio</span></button>
         <button disabled={busy === "sync"} onClick={() => void syncToFolder()}>Sync to folder<span>USB, LAN share, Syncthing, or cloud folder</span></button>
       </aside>
+      {profileDraft && (
+        <div className="panel-overlay" role="dialog" aria-label="New narrator profile">
+          <div className="profile-editor">
+            <h2>New narrator profile</h2>
+            <label className="field">Name
+              <input value={profileDraft.name} onChange={(event) => setProfileDraft({ ...profileDraft, name: event.target.value })} />
+            </label>
+            <label className="field">Narration model
+              <select value={profileDraft.engine} onChange={(event) => draftEngineChanged(event.target.value as TtsEngine)}>
+                {(Object.keys(ENGINE_LABELS) as TtsEngine[]).map((engine) => (
+                  <option key={engine} value={engine}>{ENGINE_LABELS[engine]}</option>
+                ))}
+              </select>
+            </label>
+            {profileDraft.engine === "kokoro" && (
+              <label className="field">Voice
+                <select value={profileDraft.voice} onChange={(event) => setProfileDraft({ ...profileDraft, voice: event.target.value })}>
+                  {KOKORO_VOICES.map((voice) => <option key={voice} value={voice}>{kokoroVoiceLabel(voice)}</option>)}
+                </select>
+              </label>
+            )}
+            {profileDraft.engine === "voxtral" && (
+              <label className="field">Preset voice
+                <select value={profileDraft.voice} onChange={(event) => setProfileDraft({ ...profileDraft, voice: event.target.value })}>
+                  {VOXTRAL_PRESET_VOICES.map((voice) => <option key={voice} value={voice}>{voice.replace(/_/g, " ")}</option>)}
+                </select>
+              </label>
+            )}
+            {profileDraft.engine === "maya1" && (
+              <label className="field">Voice description
+                <textarea rows={3} value={profileDraft.voice} placeholder="40-year-old female, low pitch, warm, slight British accent" onChange={(event) => setProfileDraft({ ...profileDraft, voice: event.target.value })} />
+              </label>
+            )}
+            <label className="field">Speed · {profileDraft.speed.toFixed(2)}×{profileDraft.engine === "maya1" ? " (ignored by Maya1)" : profileDraft.engine === "voxtral" ? " (fixed by Voxtral)" : ""}
+              <input disabled={profileDraft.engine === "voxtral"} type="range" min="0.5" max="2" step="0.05" value={profileDraft.speed} onChange={(event) => setProfileDraft({ ...profileDraft, speed: Number(event.target.value) })} />
+            </label>
+            <div className="editor-actions">
+              <button className="secondary-button" onClick={() => setProfileDraft(null)}>Cancel</button>
+              <button className="primary-button" disabled={!profileDraft.name.trim() || !profileDraft.voice.trim()} onClick={() => void submitProfile()}>Create narrator</button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
+}
+
+function formatTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const wholeSeconds = Math.floor(seconds);
+  return `${Math.floor(wholeSeconds / 60)}:${String(wholeSeconds % 60).padStart(2, "0")}`;
 }

@@ -47,8 +47,21 @@ Release automation should build Intel and Apple Silicon artifacts separately bef
 - FFmpeg in `PATH` for exports
 - Sleep inhibition uses `systemd-inhibit`; failure to acquire the inhibitor does not abort generation.
 
+## GPU acceleration
+
+Kokoro remains usable on CPU. Maya1 automatically builds `llama-cpp-python` with CUDA when AudiobookGen can find both an NVIDIA GPU and the CUDA compiler (`nvcc`); otherwise it installs the CPU fallback and says so on the Models page. The private PyTorch install uses uv's automatic backend selection, which chooses a compatible CUDA wheel from the detected driver.
+
+The direct Voxtral 4B INT4 path has narrower requirements:
+
+- Linux and Python 3.12
+- NVIDIA CUDA GPU with compute capability 8.0 or newer
+- 12 GB VRAM for the measured selective INT4 profile
+- about 8 GB of model weights plus CUDA PyTorch, torchao, HQQ, and working storage
+
+AudiobookGen reports the detected GPU and VRAM before use and blocks unmeasured sub-12-GB configurations. On the local RTX 3060 12 GB, the compatibility profile loaded at 3.676 GB peak PyTorch allocation and generated at a 3.812 GB peak; see [the measurement](../reports/benchmarks/voxtral-rtx3060-2026-07-16.md). Mistral's official BF16 vLLM recommendation remains at least 16 GB and is not the app default. Windows and macOS can still use Kokoro and Maya1; direct Voxtral is currently Linux/CUDA only.
+
 ## Model and disk behavior
 
-Kokoro and its Python runtime are not bundled into the base application installer. First use installs the private worker environment and then downloads the model. This keeps the initial app package smaller, makes the model license visible at installation time, and permits independent model cache repair.
+Model runtimes are not bundled into the base application installer. First use installs private dependencies and then downloads the selected model after license acceptance. Model weights use the configured models volume and never enter the source tree.
 
 Sentence WAVs are retained while they are needed for resumable generation and exports. A later cache-management screen should expose size limits and safe cleanup of segments that already exist in portable exports.

@@ -4,22 +4,29 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
 import { ImportReviewPanel } from "./ImportReviewPanel";
 import { LibraryView } from "./LibraryView";
+import { ModelsView } from "./ModelsView";
 import { ReaderStudio } from "./ReaderStudio";
 import { api, isTauri, onGenerationProgress, onModelProgress } from "@/lib/tauri";
 import { useAppStore } from "@/lib/store";
-import type { ImportSelection, ModelStatus } from "@/lib/types";
+import type { AppSettings, EngineModelStatus, ImportSelection, ModelProgress, TtsEngine } from "@/lib/types";
 
 export function AppShell() {
   const { books, activeBook, importReview, generation, error, setBooks, setActiveBook, setImportReview, setGeneration, setError } = useAppStore();
-  const [model, setModel] = useState<ModelStatus | null>(null);
-  const [modelBusy, setModelBusy] = useState(false);
-  const [modelStage, setModelStage] = useState<string | null>(null);
-  const [modelFailed, setModelFailed] = useState(false);
+  const [view, setView] = useState<"library" | "models">("library");
+  const [engines, setEngines] = useState<EngineModelStatus[] | null>(null);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [modelProgress, setModelProgress] = useState<ModelProgress | null>(null);
 
   const refreshBooks = useCallback(async () => {
     if (!isTauri()) return;
     setBooks(await api.listBooks());
   }, [setBooks]);
+
+  const refreshModels = useCallback(async () => {
+    if (!isTauri()) return;
+    setEngines(await api.listEngineStatus());
+    setSettings(await api.getAppSettings());
+  }, []);
 
   const refreshActive = useCallback(async () => {
     if (!activeBook) return;
@@ -30,14 +37,14 @@ export function AppShell() {
 
   useEffect(() => {
     if (!isTauri()) return;
-    refreshBooks().catch((reason) => setError(String(reason)));
-    api.modelStatus().then(setModel).catch((reason) => setError(String(reason)));
+    refreshBooks().catch((reason: unknown) => setError(String(reason)));
+    refreshModels().catch((reason: unknown) => setError(String(reason)));
     let unlisten: (() => void) | undefined;
     let unlistenModel: (() => void) | undefined;
-    onGenerationProgress(setGeneration).then((fn) => { unlisten = fn; }).catch((reason) => setError(String(reason)));
-    onModelProgress(setModelStage).then((fn) => { unlistenModel = fn; }).catch(() => undefined);
+    onGenerationProgress(setGeneration).then((fn) => { unlisten = fn; }).catch((reason: unknown) => setError(String(reason)));
+    onModelProgress(setModelProgress).then((fn) => { unlistenModel = fn; }).catch(() => undefined);
     return () => { unlisten?.(); unlistenModel?.(); };
-  }, [refreshBooks, setBooks, setError, setGeneration]);
+  }, [refreshBooks, refreshModels, setBooks, setError, setGeneration]);
 
   const chooseEpub = async () => {
     if (!isTauri()) { setError("Run AudiobookGen through the Tauri desktop shell to import local books."); return; }
@@ -57,41 +64,64 @@ export function AppShell() {
 
   const openBook = async (bookId: string) => {
     setError(null);
-    try { setActiveBook(await api.getBook(bookId)); } catch (reason) { setError(String(reason)); }
+    try {
+      setActiveBook(await api.getBook(bookId));
+      setView("library");
+    } catch (reason) { setError(String(reason)); }
   };
 
-  const installModel = async () => {
-    setModelBusy(true);
-    setModelFailed(false);
+  const downloadEngine = async (engine: TtsEngine) => {
     setError(null);
     try {
-      await api.downloadModel();
-      setModel(await api.modelStatus());
-      setModelStage(null);
-    } catch (reason) {
-      setModelFailed(true);
-      setError(String(reason));
+      await api.downloadEngineModel(engine);
     } finally {
-      setModelBusy(false);
+      await refreshModels().catch(() => undefined);
     }
   };
 
+  const stopVoxtral = async () => {
+    await api.stopVoxtralRuntime();
+    await refreshModels();
+  };
+
+  const saveSettings = async (next: AppSettings) => {
+    setSettings(await api.updateAppSettings(next));
+    await refreshModels();
+  };
+
+  const anyInstalled = engines?.some((engine) => engine.installed) ?? true;
+
   return (
     <div className="app-root">
-      <header className="global-header" data-tauri-drag-region><button className="wordmark" onClick={() => setActiveBook(null)}>Audiobook<span>Gen</span></button><div className="header-status"><span className={model?.installed ? "status-dot ready" : "status-dot"} /><span className="status-text">{model?.installed ? "Kokoro ready" : modelBusy && modelStage ? modelStage : "Kokoro model not installed"}</span>{!model?.installed && <button onClick={() => void installModel()} disabled={modelBusy}>{modelBusy ? "Installing…" : modelFailed ? "Retry download" : "Download"}</button>}</div><button className="header-import" onClick={() => void chooseEpub()}>+ Import EPUB</button></header>
+      <header className="global-header" data-tauri-drag-region>
+        <button className="wordmark" onClick={() => { setActiveBook(null); setView("library"); }}>Audiobook<span>Gen</span></button>
+        <nav className="header-nav">
+          <button className={view === "library" && !activeBook ? "active" : ""} onClick={() => { setActiveBook(null); setView("library"); }}>Library</button>
+          <button className={view === "models" && !activeBook ? "active" : ""} onClick={() => { setActiveBook(null); setView("models"); }}>Models</button>
+        </nav>
+        <div className="header-status">
+          <span className={anyInstalled ? "status-dot ready" : "status-dot"} />
+          <span className="status-text">
+            {engines === null ? "Checking narration models" : anyInstalled ? `${engines.filter((engine) => engine.installed).length} of ${engines.length} models installed` : "No narration model installed"}
+          </span>
+        </div>
+        <button className="header-import" onClick={() => void chooseEpub()}>+ Import EPUB</button>
+      </header>
       {error && <div className="global-error">{error}<button onClick={() => setError(null)}>×</button></div>}
-      {model && !model.installed && (
+      {engines !== null && !anyInstalled && view !== "models" && (
         <div className="model-banner">
           <p>
-            <strong>Kokoro voice model is not installed.</strong>{" "}
-            {modelBusy && modelStage ? modelStage : "Narration needs a one-time download: Python packages first, then the model (about 330 MB)."}
+            <strong>No narration model is installed.</strong>{" "}
+            {modelProgress?.message ?? "Open the Models page to download Kokoro (fast, 330 MB), Maya1 (voice design), or Voxtral (lifelike presets)."}
           </p>
-          <button className="secondary-button" onClick={() => void installModel()} disabled={modelBusy}>
-            {modelBusy ? "Installing…" : modelFailed ? "Retry download" : "Download Kokoro"}
-          </button>
+          <button className="secondary-button" onClick={() => { setActiveBook(null); setView("models"); }}>Open Models</button>
         </div>
       )}
-      {activeBook ? <ReaderStudio book={activeBook} generation={generation} onBack={() => setActiveBook(null)} onRefresh={refreshActive} /> : <LibraryView books={books} onOpen={(id) => void openBook(id)} onImport={() => void chooseEpub()} />}
+      {activeBook
+        ? <ReaderStudio book={activeBook} generation={generation} onBack={() => setActiveBook(null)} onRefresh={refreshActive} />
+        : view === "models" && engines && settings
+          ? <ModelsView engines={engines} settings={settings} modelProgress={modelProgress} onSettingsChange={saveSettings} onDownload={downloadEngine} onStopVoxtral={stopVoxtral} onError={setError} />
+          : <LibraryView books={books} onOpen={(id) => void openBook(id)} onImport={() => void chooseEpub()} />}
       {importReview && <ImportReviewPanel review={importReview} onCancel={() => setImportReview(null)} onImport={importBook} />}
     </div>
   );

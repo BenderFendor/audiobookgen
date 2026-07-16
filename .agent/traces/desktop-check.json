@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "check",
+    "-p",
+    "audiobookgen-desktop"
+  ],
+  "cwd": "/home/bender/projects/audiobookgen",
+  "duration_seconds": 4.273,
+  "max_rss_kb": 341884,
+  "returncode": 0,
+  "stderr_tail": "    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on build directory\n   Compiling audiobookgen-desktop v0.1.0 (/home/bender/projects/audiobookgen/apps/desktop/src-tauri)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.20s",
+  "stdout_tail": "",
+  "timed_out": false,
+  "verdict": "success",
+  "warnings": []
+}
