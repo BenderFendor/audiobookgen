@@ -50,6 +50,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Stub frontend dist for tauri::generate_context!
+        run: mkdir -p out
       - run: cargo fmt --all -- --check
       - run: cargo test -p audiobookgen-core --all-targets
       - run: cargo clippy --workspace --all-targets -- -D warnings
