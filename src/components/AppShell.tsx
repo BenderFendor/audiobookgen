@@ -64,7 +64,7 @@ export function AppShell() {
 
   return (
     <div className="app-root">
-      <header className="global-header"><button className="wordmark" onClick={() => setActiveBook(null)}>AUDIOBOOK<span>GEN</span></button><div className="header-status"><span className={model?.installed ? "status-dot ready" : "status-dot"} />{model?.installed ? "Kokoro ready" : "Kokoro model not installed"}{!model?.installed && <button onClick={() => void installModel()} disabled={modelBusy}>{modelBusy ? "Downloading…" : "Download"}</button>}</div><button className="header-import" onClick={() => void chooseEpub()}>+ Import EPUB</button></header>
+      <header className="global-header"><button className="wordmark" onClick={() => setActiveBook(null)}>Audiobook<span>Gen</span></button><div className="header-status"><span className={model?.installed ? "status-dot ready" : "status-dot"} />{model?.installed ? "Kokoro ready" : "Kokoro model not installed"}{!model?.installed && <button onClick={() => void installModel()} disabled={modelBusy}>{modelBusy ? "Downloading…" : "Download"}</button>}</div><button className="header-import" onClick={() => void chooseEpub()}>+ Import EPUB</button></header>
       {error && <div className="global-error">{error}<button onClick={() => setError(null)}>×</button></div>}
       {activeBook ? <ReaderStudio book={activeBook} generation={generation} onBack={() => setActiveBook(null)} onRefresh={refreshActive} /> : <LibraryView books={books} onOpen={(id) => void openBook(id)} onImport={() => void chooseEpub()} />}
       {importReview && <ImportReviewPanel review={importReview} onCancel={() => setImportReview(null)} onImport={importBook} />}

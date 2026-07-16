@@ -645,6 +645,27 @@ mod tests {
         );
     }
     #[test]
+    fn counts_footnote_elements_once_each() {
+        // An aside that also carries epub:type="footnote" is one footnote, not two.
+        assert_eq!(
+            count_footnotes(r#"<aside epub:type="footnote"><p>Note.</p></aside>"#),
+            1
+        );
+        assert_eq!(count_footnotes("<aside><p>Sidebar note.</p></aside>"), 1);
+        assert_eq!(
+            count_footnotes(r#"<p role="doc-endnote">An endnote.</p>"#),
+            1
+        );
+        assert_eq!(
+            count_footnotes(
+                r#"<span epub:type="footnote">a</span><aside role="doc-note">b</aside>"#
+            ),
+            2
+        );
+        assert_eq!(count_footnotes("<p>No notes here.</p>"), 0);
+    }
+
+    #[test]
     fn ignores_font_obfuscation() {
         let source = r#"<EncryptionMethod Algorithm="http://www.idpf.org/2008/embedding"/>"#;
         let algorithms = Regex::new(r#"(?i)Algorithm\s*=\s*["']([^"']+)["']"#).unwrap();

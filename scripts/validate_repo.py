@@ -16,6 +16,12 @@ REQUIRED = [
     "crates/audiobookgen-core/src/epub.rs",
     "services/tts-worker/audiobookgen_worker/main.py",
     "src/components/ReaderStudio.tsx",
+    "src/lib/tauri.ts",
+    "src/lib/types.ts",
+    "src/lib/store.ts",
+    "src/lib/reader.ts",
+    "src/lib/import-selection.ts",
+    "apps/desktop/src-tauri/icons/icon.png",
 ]
 
 

@@ -39,3 +39,11 @@
 **Rollback:** `git revert` the consolidation commits, or reset to tag `pre-consolidation-main` (2430b0e). Deleted branches are preserved as `archive/*` tags.
 
 **Status:** done
+
+## Follow-up session (2026-07-16): first real-run fixes and redesign
+
+- **Reader "TypeError: Load failed"**: the CSP `connect-src` did not allow `asset:`/`http://asset.localhost`, so `fetch()` of the imported EPUB was blocked. Added the asset protocol to `connect-src` in `tauri.conf.json`. Needs an in-app retest with a real book.
+- **Worker install failed on Python 3.14**: system Python is outside Kokoro's `>=3.10,<3.14` range. `ensure_worker_environment` now prefers `uv` (`uv venv --python 3.12` + `uv pip install`), which downloads a managed interpreter; the old `python3 -m venv` path remains as fallback. Added `services/tts-worker/.python-version` (3.12) and `AUDIOBOOKGEN_UV` override.
+- **UI redesign**: replaced the dark acid-lime theme with an editorial paper aesthetic (warm paper ground, ink text, hairline rules, serif display via Iowan Old Style/Palatino/Georgia stack, letterspaced uppercase labels, monochrome buttons that invert on hover). All CSS class names kept; markup changes limited to the wordmark. Reader highlight color moved to a soft highlighter yellow.
+- **Tests added (TDD)**: `epub.rs::counts_footnote_elements_once_each` (locks the double-count fix, covers aside/epub:type/doc-note/doc-endnote variants); `src/lib/tauri.test.ts` (isTauri/mediaUrl behavior outside Tauri). `scripts/validate_repo.py` now requires the reconstructed `src/lib` modules and the icon so a future incomplete checkout fails validation.
+- Verified: clippy -D warnings, fmt, 10 Rust tests, tsc, Next build, 7 vitest tests, repo validator, 4 pytest, app boot on Hyprland.

@@ -125,13 +125,43 @@ impl AppRuntime {
                 .and_then(Path::parent)
                 .ok_or_else(|| anyhow!("invalid managed Python path"))?;
             std::fs::create_dir_all(venv_dir.parent().unwrap_or(venv_dir))?;
+            let uv = std::env::var_os("AUDIOBOOKGEN_UV")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(if cfg!(windows) { "uv.exe" } else { "uv" }));
+            let uv_available = std::process::Command::new(&uv)
+                .arg("--version")
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false);
+            if uv_available {
+                // uv downloads a managed interpreter, so this works even when the
+                // system Python is newer than Kokoro supports (>=3.10,<3.14).
+                let status = std::process::Command::new(&uv)
+                    .args(["venv", "--python", WORKER_PYTHON_VERSION])
+                    .arg(venv_dir)
+                    .status()
+                    .context("creating the managed Python environment with uv")?;
+                if !status.success() {
+                    bail!("uv venv failed with {status}");
+                }
+                let status = std::process::Command::new(&uv)
+                    .args(["pip", "install", "--python"])
+                    .arg(&python)
+                    .arg(&worker_root)
+                    .status()
+                    .context("installing the Kokoro worker dependencies with uv")?;
+                if !status.success() {
+                    bail!("uv pip install failed with {status}");
+                }
+                return Ok(());
+            }
             let status = std::process::Command::new(&bootstrap)
                 .args(["-m", "venv"])
                 .arg(venv_dir)
                 .status()
                 .with_context(|| {
                     format!(
-                        "Python 3.10-3.13 is required to install Kokoro. Could not run {}",
+                        "Python 3.10-3.13 (or uv) is required to install Kokoro. Could not run {}",
                         bootstrap.display()
                     )
                 })?;
@@ -165,6 +195,9 @@ impl AppRuntime {
         self.core.data_dir.join("cache/segments")
     }
 }
+
+// Kokoro's dependency chain supports >=3.10,<3.14; keep this inside that range.
+const WORKER_PYTHON_VERSION: &str = "3.12";
 
 fn managed_python(data_dir: &Path) -> PathBuf {
     if cfg!(windows) {

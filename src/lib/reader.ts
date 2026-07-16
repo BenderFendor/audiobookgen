@@ -4,7 +4,7 @@ import type { Fragment, FragmentLocator } from "./types";
 
 export type ReaderFlow = "paginated" | "scrolled-doc";
 
-const HIGHLIGHT_STYLE = "background: rgba(190, 242, 2, 0.35); border-radius: 2px;";
+const HIGHLIGHT_STYLE = "background: rgba(245, 230, 168, 0.9); border-radius: 2px;";
 
 interface RelocatedLocation {
   start: { href: string; cfi: string };
