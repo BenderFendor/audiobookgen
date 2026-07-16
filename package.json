@@ -1,0 +1,33 @@
+{
+  "name": "audiobookgen",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first EPUB to Kokoro audiobook studio with synchronized reading.",
+  "license": "AGPL-3.0-or-later",
+  "engines": { "node": ">=20.9.0" },
+  "scripts": {
+    "dev": "node scripts/next.mjs dev",
+    "build": "node scripts/next.mjs build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "tauri": "tauri",
+    "validate:repo": "python3 scripts/validate_repo.py"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "epubjs": "^0.3.93",
+    "next": "16.2.10",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

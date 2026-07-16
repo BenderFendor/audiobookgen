@@ -1,0 +1,21 @@
+[project]
+name = "audiobookgen-worker"
+version = "0.1.0"
+description = "Persistent Kokoro worker for AudiobookGen"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+  "kokoro>=0.9.4,<1",
+  "soundfile>=0.12,<1",
+  "huggingface-hub>=0.28,<1",
+  "numpy>=1.26,<3"
+]
+
+[project.optional-dependencies]
+dev = []
+
+[project.scripts]
+audiobookgen-worker = "audiobookgen_worker.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
