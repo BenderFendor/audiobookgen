@@ -80,6 +80,17 @@ export function AppShell() {
     <div className="app-root">
       <header className="global-header" data-tauri-drag-region><button className="wordmark" onClick={() => setActiveBook(null)}>Audiobook<span>Gen</span></button><div className="header-status"><span className={model?.installed ? "status-dot ready" : "status-dot"} /><span className="status-text">{model?.installed ? "Kokoro ready" : modelBusy && modelStage ? modelStage : "Kokoro model not installed"}</span>{!model?.installed && <button onClick={() => void installModel()} disabled={modelBusy}>{modelBusy ? "Installing…" : modelFailed ? "Retry download" : "Download"}</button>}</div><button className="header-import" onClick={() => void chooseEpub()}>+ Import EPUB</button></header>
       {error && <div className="global-error">{error}<button onClick={() => setError(null)}>×</button></div>}
+      {model && !model.installed && (
+        <div className="model-banner">
+          <p>
+            <strong>Kokoro voice model is not installed.</strong>{" "}
+            {modelBusy && modelStage ? modelStage : "Narration needs a one-time download: Python packages first, then the model (about 330 MB)."}
+          </p>
+          <button className="secondary-button" onClick={() => void installModel()} disabled={modelBusy}>
+            {modelBusy ? "Installing…" : modelFailed ? "Retry download" : "Download Kokoro"}
+          </button>
+        </div>
+      )}
       {activeBook ? <ReaderStudio book={activeBook} generation={generation} onBack={() => setActiveBook(null)} onRefresh={refreshActive} /> : <LibraryView books={books} onOpen={(id) => void openBook(id)} onImport={() => void chooseEpub()} />}
       {importReview && <ImportReviewPanel review={importReview} onCancel={() => setImportReview(null)} onImport={importBook} />}
     </div>

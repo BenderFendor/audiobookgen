@@ -36,6 +36,11 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .warning-banner { color: #6d5717; }
 .global-error button, .studio-message button { border: 0; background: transparent; color: var(--ink); cursor: pointer; }
 
+.model-banner { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 12px 28px; background: var(--paper-2); border-bottom: 1px solid var(--line); }
+.model-banner p { margin: 0; font-size: .85rem; color: var(--muted); }
+.model-banner strong { color: var(--ink); font-weight: 500; }
+.model-banner button { flex-shrink: 0; }
+
 .eyebrow { margin: 0 0 12px; color: var(--muted); font-size: .64rem; font-weight: 500; letter-spacing: .22em; text-transform: uppercase; }
 .primary-button, .secondary-button, .danger-button { border: 1px solid var(--ink); padding: 12px 18px; font-size: .74rem; letter-spacing: .12em; text-transform: uppercase; cursor: pointer; transition: background .15s ease, color .15s ease; }
 .primary-button { background: var(--ink); color: var(--paper); }
