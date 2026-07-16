@@ -31,9 +31,18 @@ The worker environment is created with Python 3.12 and uv's automatic PyTorch ba
 
 The reference generator decodes at 24 kHz, low-pass filters, resamples to 48 kHz, and peak-normalizes. Several reference callers then labeled the post-processed array as 24 kHz, causing half-speed, low-pitch playback. AudiobookGen returns a typed `GeneratedAudio` carrying samples and sample rate together; duration is always `len(samples) / sample_rate`, and WAV serialization uses the carried 48 kHz value. `test_voxtral_int4.py` locks this behavior with a one-second sine-wave regression.
 
+## Quantized weight cache
+
+The first load quantizes the backbone layer by layer (minutes) and then
+writes the finished quantized state to `<model dir>/quantized-cache/`.
+Subsequent loads restore it straight to CUDA in seconds. The cache is keyed
+by torch/torchao/HQQ versions, the quantization recipe, and the weights file
+size and mtime; any mismatch or read failure falls back to the slow path and
+rewrites the cache. Deleting the `quantized-cache` directory is always safe.
+
 ## Benchmark
 
-Run on a CUDA host:
+Run on a CUDA host. Single-utterance mode:
 
 ```bash
 PYTHONPATH=services/tts-worker \
@@ -43,7 +52,24 @@ PYTHONPATH=services/tts-worker \
   --profile compatibility
 ```
 
-The command emits JSON and Markdown with model checksum, software versions, GPU/driver, profile parameters, duration, FPS, real-time factor, PyTorch allocated/reserved/peak memory, external GPU memory, and basic waveform validation. Do not compare every GPU against the reference repository's RTX 3090 FPS.
+Suite mode loads the model once, runs a fixed five-sentence corpus per
+profile with a per-phase timing breakdown (prefill, backbone, acoustic
+solver, loop overhead, codec), and emits aggregate FPS / wall-RTF numbers
+for `reports/benchmarks/SPEEDLOG.md`:
+
+```bash
+PYTHONPATH=services/tts-worker \
+  .venv/bin/python services/tts-worker/scripts/benchmark_voxtral.py \
+  --model-dir /path/to/voxtral-4b-tts \
+  --output reports/benchmarks/voxtral-suite.json \
+  --suite --profiles compatibility,quality,balanced
+```
+
+Compiled profiles always run last because compilation mutates the model. The
+command emits JSON and Markdown with model checksum, software versions,
+GPU/driver, profile parameters, duration, FPS, real-time factor, PyTorch
+allocated/reserved/peak memory, and basic waveform validation. Do not compare
+every GPU against the reference repository's RTX 3090 FPS.
 
 ## Troubleshooting
 

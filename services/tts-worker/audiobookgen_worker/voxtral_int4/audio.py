@@ -15,6 +15,7 @@ class GeneratedAudio:
     text: str
     voice: str
     engine_profile: str
+    timings: dict | None = None
 
     @property
     def duration_seconds(self) -> float:

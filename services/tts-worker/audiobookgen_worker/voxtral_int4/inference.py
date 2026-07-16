@@ -132,6 +132,7 @@ def generate_speech_fast(
     cfg_alpha: float = 1.2,
     engine_profile: str = "balanced",
     seed: int = 0,
+    collect_timings: bool = False,
 ) -> GeneratedAudio:
     """Generate one required sentence; failures are explicit and never partial."""
     if cfg_alpha < 1.2:
@@ -140,6 +141,8 @@ def generate_speech_fast(
     reset_static_cache(model)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    timings: dict | None = {} if collect_timings else None
+    setup_started = time.monotonic()
 
     # Tokenize
     text_tokens = tokenizer.encode(text)
@@ -167,6 +170,10 @@ def generate_speech_fast(
     prompt_embed[0, 2 : 2 + n_voice_frames] = voice_embed
 
     # Prefill
+    if timings is not None:
+        timings["setup_seconds"] = time.monotonic() - setup_started
+        torch.cuda.synchronize()
+    prefill_started = time.monotonic()
     model.backbone.setup_freqs(
         max_len=max_frames + len(prompt_ids) + 100, device=device
     )
@@ -180,6 +187,14 @@ def generate_speech_fast(
     hidden, caches = model.backbone(audio_tok_embed, caches=caches, pos=pos)
     pos += 1
     h = hidden[:, -1, :]
+    if timings is not None:
+        torch.cuda.synchronize()
+        timings["prefill_seconds"] = time.monotonic() - prefill_started
+
+    # CUDA event pairs isolate acoustic-solver time from backbone-step time
+    # inside the frame loop without a per-frame host synchronization.
+    acoustic_events: list[tuple] = []
+    backbone_events: list[tuple] = []
 
     all_codes = []
     t0 = time.time()
@@ -187,10 +202,17 @@ def generate_speech_fast(
     reached_end = False
     for _frame_index in range(max_frames):
         try:
+            if timings is not None:
+                start_event = torch.cuda.Event(enable_timing=True)
+                end_event = torch.cuda.Event(enable_timing=True)
+                start_event.record()
             # Fast acoustic decode
             codes, is_end = _decode_one_frame_fast(
                 model.acoustic, h, config, flow_steps=flow_steps, cfg_alpha=cfg_alpha
             )
+            if timings is not None:
+                end_event.record()
+                acoustic_events.append((start_event, end_event))
 
             if is_end.any():
                 reached_end = True
@@ -199,14 +221,34 @@ def generate_speech_fast(
             all_codes.append(codes)
 
             # Embed and advance LLM
+            if timings is not None:
+                start_event = torch.cuda.Event(enable_timing=True)
+                end_event = torch.cuda.Event(enable_timing=True)
+                start_event.record()
             next_embed = model.embed_audio_codes(codes).unsqueeze(1)
             hidden, caches = model.backbone(next_embed, caches=caches, pos=pos)
             pos += 1
             h = hidden[:, -1, :]
+            if timings is not None:
+                end_event.record()
+                backbone_events.append((start_event, end_event))
         except RuntimeError as error:
             raise classify_cuda_error(error) from error
 
     gen_time = time.time() - t0
+    if timings is not None:
+        torch.cuda.synchronize()
+        timings["decode_loop_seconds"] = gen_time
+        timings["acoustic_seconds"] = sum(
+            start.elapsed_time(end) for start, end in acoustic_events
+        ) / 1_000.0
+        timings["backbone_seconds"] = sum(
+            start.elapsed_time(end) for start, end in backbone_events
+        ) / 1_000.0
+        timings["loop_overhead_seconds"] = max(
+            0.0,
+            gen_time - timings["acoustic_seconds"] - timings["backbone_seconds"],
+        )
     n_frames = len(all_codes)
 
     if n_frames == 0:
@@ -229,6 +271,7 @@ def generate_speech_fast(
         raise EmptyWaveform("warmup trimming removed every generated frame")
 
     # Decode to audio — sync first to catch any pending CUDA errors from generation
+    codec_started = time.monotonic()
     try:
         torch.cuda.synchronize()
         all_codes_tensor = torch.stack(all_codes, dim=1)
@@ -236,10 +279,15 @@ def generate_speech_fast(
         audio = audio[0].float().cpu().numpy()
     except RuntimeError as error:
         raise CodecFailure(str(classify_cuda_error(error))) from error
+    if timings is not None:
+        timings["codec_seconds"] = time.monotonic() - codec_started
 
     if not np.isfinite(audio).all():
         raise NonFiniteWaveform("codec output contains NaN or infinity")
+    postprocess_started = time.monotonic()
     audio, sample_rate = postprocess_audio(audio)
+    if timings is not None:
+        timings["postprocess_seconds"] = time.monotonic() - postprocess_started
     if audio.size == 0 or float(np.abs(audio).max(initial=0.0)) <= 1e-6:
         raise EmptyWaveform("postprocessed waveform is empty or silent")
 
@@ -251,6 +299,7 @@ def generate_speech_fast(
         text=text,
         voice=voice_name,
         engine_profile=engine_profile,
+        timings=timings,
     )
 
 
