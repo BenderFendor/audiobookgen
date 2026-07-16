@@ -21,6 +21,7 @@
 - `papercuts.md`
 - `reports/benchmarks/voxtral-rtx3060-2026-07-16.json`
 - `reports/benchmarks/voxtral-rtx3060-2026-07-16.md`
+- `reports/screenshots/voxtral-models.png`
 - `scripts/e2e_voxtral_worker.py`
 - `services/tts-worker/audiobookgen_worker/engines/base.py`
 - `services/tts-worker/audiobookgen_worker/engines/kokoro.py`
