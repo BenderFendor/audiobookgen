@@ -113,7 +113,7 @@ impl AppRuntime {
     }
 
     async fn ensure_worker_environment(&self) -> Result<()> {
-        if self.bootstrap_python.is_none() || self.python.exists() {
+        if self.bootstrap_python.is_none() {
             return Ok(());
         }
         let bootstrap = self.bootstrap_python.clone().expect("checked above");
@@ -123,8 +123,23 @@ impl AppRuntime {
             let venv_dir = python
                 .parent()
                 .and_then(Path::parent)
-                .ok_or_else(|| anyhow!("invalid managed Python path"))?;
-            std::fs::create_dir_all(venv_dir.parent().unwrap_or(venv_dir))?;
+                .ok_or_else(|| anyhow!("invalid managed Python path"))?
+                .to_path_buf();
+            // A version-stamped marker proves the last install finished. Without it
+            // (e.g. a venv left behind by a failed install, or one built against an
+            // unsupported interpreter) the environment is rebuilt from scratch.
+            let marker = venv_dir.join(".audiobookgen-install-ok");
+            let marker_current = std::fs::read_to_string(&marker)
+                .map(|content| content.trim() == WORKER_PYTHON_VERSION)
+                .unwrap_or(false);
+            if python.exists() && marker_current {
+                return Ok(());
+            }
+            if venv_dir.exists() {
+                std::fs::remove_dir_all(&venv_dir)
+                    .context("removing the stale managed Python environment")?;
+            }
+            std::fs::create_dir_all(venv_dir.parent().unwrap_or(&venv_dir))?;
             let uv = std::env::var_os("AUDIOBOOKGEN_UV")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(if cfg!(windows) { "uv.exe" } else { "uv" }));
@@ -138,7 +153,7 @@ impl AppRuntime {
                 // system Python is newer than Kokoro supports (>=3.10,<3.14).
                 let status = std::process::Command::new(&uv)
                     .args(["venv", "--python", WORKER_PYTHON_VERSION])
-                    .arg(venv_dir)
+                    .arg(&venv_dir)
                     .status()
                     .context("creating the managed Python environment with uv")?;
                 if !status.success() {
@@ -153,11 +168,12 @@ impl AppRuntime {
                 if !status.success() {
                     bail!("uv pip install failed with {status}");
                 }
+                std::fs::write(&marker, WORKER_PYTHON_VERSION)?;
                 return Ok(());
             }
             let status = std::process::Command::new(&bootstrap)
                 .args(["-m", "venv"])
-                .arg(venv_dir)
+                .arg(&venv_dir)
                 .status()
                 .with_context(|| {
                     format!(
@@ -182,6 +198,7 @@ impl AppRuntime {
             if !status.success() {
                 bail!("installing the Kokoro worker failed with {status}");
             }
+            std::fs::write(&marker, WORKER_PYTHON_VERSION)?;
             Ok(())
         })
         .await??;
@@ -494,16 +511,31 @@ pub async fn model_status(
 
 #[tauri::command]
 pub async fn download_model(
+    app: AppHandle,
     runtime: tauri::State<'_, AppRuntime>,
 ) -> std::result::Result<Value, String> {
-    let worker = runtime.worker().await.map_err(command_error)?;
+    let stage = |message: &str| {
+        let _ = app.emit("model-progress", message);
+    };
+    stage(
+        "Preparing the narration engine. The first run installs Python packages and can take several minutes.",
+    );
+    let worker = runtime.worker().await.map_err(|error| {
+        stage("The narration engine could not be prepared.");
+        command_error(error)
+    })?;
+    stage("Downloading the Kokoro model (about 330 MB).");
     let response = worker
         .request(WorkerRequest::DownloadModel {
             id: Uuid::new_v4().to_string(),
             model_dir: runtime.model_dir(),
         })
         .await
-        .map_err(command_error)?;
+        .map_err(|error| {
+            stage("The Kokoro model download failed.");
+            command_error(error)
+        })?;
+    stage("Kokoro is ready.");
     Ok(response.payload)
 }
 

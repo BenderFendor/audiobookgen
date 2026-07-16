@@ -13,6 +13,7 @@
     "windows": [
       {
         "title": "AudiobookGen",
+        "decorations": false,
         "width": 1440,
         "height": 900,
         "minWidth": 1080,

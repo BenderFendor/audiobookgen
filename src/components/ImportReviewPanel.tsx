@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { defaultImportSelection, toggleChapter } from "@/lib/import-selection";
 import type { ImportReview, ImportSelection } from "@/lib/types";
 
@@ -13,6 +13,13 @@ interface Props {
 export function ImportReviewPanel({ review, onCancel, onImport }: Props) {
   const [selection, setSelection] = useState(() => defaultImportSelection(review));
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
   const words = useMemo(() => review.chapters.filter((chapter) => selection.selected_chapter_indices.includes(chapter.index)).reduce((sum, chapter) => sum + chapter.estimated_words, 0), [review.chapters, selection.selected_chapter_indices]);
   const submit = async () => {
     setBusy(true);

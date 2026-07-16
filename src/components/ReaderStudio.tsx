@@ -76,6 +76,25 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
   }, [currentFragmentId]);
 
   useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
+      if (event.key === "ArrowRight") void readerRef.current?.next();
+      else if (event.key === "ArrowLeft") void readerRef.current?.previous();
+      else if (event.key === " ") {
+        event.preventDefault();
+        const audio = audioRef.current;
+        if (audio) {
+          if (audio.paused) void audio.play();
+          else audio.pause();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
     if (generation?.bookId !== book.summary.id) return;
     if (generation.state === "complete") {
       setJobId(null);

@@ -1,5 +1,6 @@
 "use client";
 
+import type { CSSProperties } from "react";
 import { mediaUrl } from "@/lib/tauri";
 import type { BookSummary } from "@/lib/types";
 
@@ -18,7 +19,6 @@ export function LibraryView({ books, onOpen, onImport }: Props) {
           <h1>Turn an EPUB into a book you can hear.</h1>
           <p className="hero-copy">Kokoro narration, sentence-level read-along, portable M4B and narrated EPUB exports. Your library stays on your machine.</p>
         </div>
-        <button className="primary-button" onClick={onImport}>Import EPUB</button>
       </section>
       {books.length === 0 ? (
         <section className="empty-library">
@@ -32,7 +32,7 @@ export function LibraryView({ books, onOpen, onImport }: Props) {
           {books.map((book, position) => {
             const percent = book.total_sentences ? Math.round((book.generated_sentences / book.total_sentences) * 100) : 0;
             return (
-              <button className="book-card" key={book.id} onClick={() => onOpen(book.id)}>
+              <button className="book-card" key={book.id} style={{ "--stagger": `${Math.min(position, 12) * 45}ms` } as CSSProperties} onClick={() => onOpen(book.id)}>
                 <div className="book-cover">
                   {book.cover_path ? <img src={mediaUrl(book.cover_path)} alt="" /> : <div className="cover-fallback">{String(position + 1).padStart(2, "0")}</div>}
                   <span className="layout-badge">{book.layout.replace("_", " ")}</span>

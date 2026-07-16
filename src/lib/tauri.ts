@@ -41,3 +41,7 @@ export const api = {
 export async function onGenerationProgress(callback: (progress: GenerationProgress) => void): Promise<() => void> {
   return listen<GenerationProgress>("generation-progress", (event) => callback(event.payload));
 }
+
+export async function onModelProgress(callback: (stage: string) => void): Promise<() => void> {
+  return listen<string>("model-progress", (event) => callback(event.payload));
+}
