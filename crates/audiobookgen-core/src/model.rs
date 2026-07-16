@@ -5,7 +5,11 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum EpubLayout { Reflowable, Fixed, Mixed }
+pub enum EpubLayout {
+    Reflowable,
+    Fixed,
+    Mixed,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookSummary {
@@ -66,16 +70,31 @@ pub struct ImportSelection {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum FootnoteMode { Skip, Inline, EndOfChapter }
+pub enum FootnoteMode {
+    Skip,
+    Inline,
+    EndOfChapter,
+}
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TableMode { Skip, Summary, Cells }
+pub enum TableMode {
+    Skip,
+    Summary,
+    Cells,
+}
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CaptionMode { Skip, Read }
+pub enum CaptionMode {
+    Skip,
+    Read,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BookDetail { pub summary: BookSummary, pub chapters: Vec<Chapter>, pub profiles: Vec<NarrationProfile> }
+pub struct BookDetail {
+    pub summary: BookSummary,
+    pub chapters: Vec<Chapter>,
+    pub profiles: Vec<NarrationProfile>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chapter {
@@ -107,7 +126,15 @@ pub struct Fragment {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum FragmentKind { Heading, Sentence, Dialogue, Caption, Table, Footnote, SceneBreak }
+pub enum FragmentKind {
+    Heading,
+    Sentence,
+    Dialogue,
+    Caption,
+    Table,
+    Footnote,
+    SceneBreak,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FragmentLocator {
@@ -133,11 +160,19 @@ pub struct NarrationProfile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateNarrationProfile { pub name: String, pub voice: String, pub speed: f32 }
+pub struct CreateNarrationProfile {
+    pub name: String,
+    pub voice: String,
+    pub speed: f32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum GenerationMode { CurrentAndNext, FullBook, SelectedChapters }
+pub enum GenerationMode {
+    CurrentAndNext,
+    FullBook,
+    SelectedChapters,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueGeneration {

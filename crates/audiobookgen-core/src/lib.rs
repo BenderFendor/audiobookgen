@@ -13,7 +13,10 @@ use db::LibraryDatabase;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
-pub struct Core { pub data_dir: PathBuf, pub db: LibraryDatabase }
+pub struct Core {
+    pub data_dir: PathBuf,
+    pub db: LibraryDatabase,
+}
 impl Core {
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();

@@ -1,7 +1,5 @@
 use audiobookgen_core::cache::segment_cache_key;
-use audiobookgen_core::model::{
-    Fragment, FragmentKind, FragmentLocator, NarrationProfile,
-};
+use audiobookgen_core::model::{Fragment, FragmentKind, FragmentLocator, NarrationProfile};
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -50,8 +48,14 @@ fn cache_key_changes_with_voice_and_speed() {
     let bella = profile(fragment.book_id, "af_bella", 1.0);
     let faster = profile(fragment.book_id, "af_heart", 1.1);
 
-    assert_ne!(segment_cache_key(&fragment, &heart), segment_cache_key(&fragment, &bella));
-    assert_ne!(segment_cache_key(&fragment, &heart), segment_cache_key(&fragment, &faster));
+    assert_ne!(
+        segment_cache_key(&fragment, &heart),
+        segment_cache_key(&fragment, &bella)
+    );
+    assert_ne!(
+        segment_cache_key(&fragment, &heart),
+        segment_cache_key(&fragment, &faster)
+    );
 }
 
 #[test]
