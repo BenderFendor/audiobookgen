@@ -255,6 +255,13 @@ class VoxtralInt4Runtime:
         if voice not in self.voices():
             raise ValueError(f"unknown Voxtral voice: {voice}")
         if profile["compile"] and not self._compiled:
+            import os
+
+            # Persist compiled kernels next to the model so the one-time
+            # compile warmup is paid once per machine, not per process.
+            os.environ.setdefault(
+                "TORCHINDUCTOR_CACHE_DIR", str(self.model_dir / "inductor-cache")
+            )
             self.model.backbone = torch.compile(
                 self.model.backbone, mode="default", fullgraph=False
             )

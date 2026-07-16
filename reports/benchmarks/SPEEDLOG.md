@@ -18,6 +18,8 @@ second). This ledger is the single answer to "what did each change buy."
 | 2026-07-16 | M3-B2 batched CFG | (this commit) | quality | 11.3 | 1.18 | 6.3 | +49% FPS |
 | 2026-07-16 | M3-B2 batched CFG | (this commit) | balanced | 33.0 | 0.79 | 6.3 | +42% FPS, decode RTF 0.38; prefill recompiles still hurt first sentences; compile warmup 64.3 s. QUALITY GATE PENDING: same CFG equation, but batch reduction order changes exact floats and the autoregressive loop amplifies them into a different rendering (duration shifts up to 4 s) — needs blinded listening vs baseline WAVs |
 
+| 2026-07-16 | M3-B3a eager prefill + fixed freqs_cis shape + persistent inductor cache | (this commit) | balanced | 32.0 | 0.45 | 5.0 | recompile stalls eliminated: every sentence prefill ~0.3 s (was 3-21 s); compile warmup 64 s → 15 s with populated cache, one-time per process; decode RTF 0.39 |
+
 Full baseline detail: `voxtral-baseline-suite-2026-07-16.md`. Codec decode is
 negligible (~0.03 s/sentence after warmup); loop overhead ~0. Rows are
 appended by each optimization PR; the M1 baseline is row zero.

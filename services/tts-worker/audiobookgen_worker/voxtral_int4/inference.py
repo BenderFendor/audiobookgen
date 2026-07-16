@@ -174,10 +174,18 @@ def generate_speech_fast(
         timings["setup_seconds"] = time.monotonic() - setup_started
         torch.cuda.synchronize()
     prefill_started = time.monotonic()
-    model.backbone.setup_freqs(
-        max_len=max_frames + len(prompt_ids) + 100, device=device
-    )
-    hidden, caches = model.backbone(prompt_embed)
+    # freqs_cis must keep one fixed shape across sentences: the compiled
+    # decode step guards on it, and a per-sentence size (prompt length +
+    # max_frames) forces a multi-second recompile on every new length.
+    needed_freqs = len(prompt_ids) + max_frames + 1
+    if model.backbone.freqs_cis is None or model.backbone.freqs_cis.shape[0] < needed_freqs:
+        model.backbone.setup_freqs(max_len=max(1280, needed_freqs), device=device)
+    # Prompt length varies per sentence and the backbone specializes shapes,
+    # so a compiled backbone recompiles on every new length (multi-second
+    # stalls). Prefill therefore always runs the eager module; only the
+    # static single-token decode step below uses the compiled wrapper.
+    prefill_backbone = getattr(model.backbone, "_orig_mod", model.backbone)
+    hidden, caches = prefill_backbone(prompt_embed)
     pos = len(prompt_ids)
 
     # First decode step: AUDIO token
