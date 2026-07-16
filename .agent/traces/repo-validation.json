@@ -1,0 +1,15 @@
+{
+  "command": [
+    "python3",
+    "scripts/validate_repo.py"
+  ],
+  "cwd": "/home/bender/projects/audiobookgen",
+  "duration_seconds": 0.615,
+  "max_rss_kb": 19964,
+  "returncode": 0,
+  "stderr_tail": "",
+  "stdout_tail": "Repository structure and static manifests are valid.",
+  "timed_out": false,
+  "verdict": "success",
+  "warnings": []
+}

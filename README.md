@@ -16,6 +16,7 @@ AudiobookGen is a local-first desktop application that turns DRM-free EPUB 2 and
 - Resumes interrupted jobs without regenerating valid cached sentences.
 - Supports several narration profiles for one book, with one narrator per profile.
 - Saves reading and listening progress, including the current sentence and audio offset.
+- Plays sentence audio with visible play, pause, seek, volume, and current-sentence marking.
 - Displays EPUBs in paginated or scrolling mode with sentence click-to-play.
 - Stores book-scoped pronunciation corrections without changing displayed EPUB text.
 - Exports chapter M4A files, one chaptered M4B, and EPUB 3 Media Overlays.

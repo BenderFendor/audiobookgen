@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/home/bender/projects/audiobookgen",
+  "duration_seconds": 1.667,
+  "max_rss_kb": 319416,
+  "returncode": 0,
+  "stderr_tail": "   Compiling audiobookgen-desktop v0.1.0 (/home/bender/projects/audiobookgen/apps/desktop/src-tauri)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.54s",
+  "stdout_tail": "",
+  "timed_out": false,
+  "verdict": "success",
+  "warnings": []
+}

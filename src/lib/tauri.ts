@@ -14,6 +14,13 @@ export function mediaUrl(path: string): string {
   return isTauri() ? convertFileSrc(path) : path;
 }
 
+export async function wavObjectUrl(path: string): Promise<string> {
+  const response = await fetch(mediaUrl(path));
+  if (!response.ok) throw new Error(`could not read generated audio (${response.status})`);
+  const bytes = await response.arrayBuffer();
+  return URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+}
+
 export const api = {
   inspectEpub: (path: string) => invoke<ImportReview>("inspect_epub_file", { path }),
   importEpub: (review: ImportReview, selection: ImportSelection) => invoke<BookDetail>("import_epub", { review, selection }),

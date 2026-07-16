@@ -1,0 +1,15 @@
+{
+  "command": [
+    "python3",
+    "scripts/e2e_mock_worker.py"
+  ],
+  "cwd": "/home/bender/projects/audiobookgen",
+  "duration_seconds": 0.1,
+  "max_rss_kb": 19788,
+  "returncode": 0,
+  "stderr_tail": "",
+  "stdout_tail": "Mock worker E2E passed: 38444 byte WAV, 4 protocol events.",
+  "timed_out": false,
+  "verdict": "success",
+  "warnings": []
+}

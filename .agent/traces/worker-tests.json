@@ -1,0 +1,24 @@
+{
+  "command": [
+    "env",
+    "PYTHONPATH=services/tts-worker",
+    "python3",
+    "-W",
+    "error::ResourceWarning",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "services/tts-worker/tests",
+    "-v"
+  ],
+  "cwd": "/home/bender/projects/audiobookgen",
+  "duration_seconds": 0.137,
+  "max_rss_kb": 21568,
+  "returncode": 0,
+  "stderr_tail": "test_accepts_absolute_generation_request (test_protocol.ProtocolValidationTest.test_accepts_absolute_generation_request) ... ok\ntest_rejects_relative_paths (test_protocol.ProtocolValidationTest.test_rejects_relative_paths) ... ok\ntest_rejects_unreasonable_speed (test_protocol.ProtocolValidationTest.test_rejects_unreasonable_speed) ... ok\ntest_mock_worker_generates_valid_wav_and_stays_alive (test_worker.WorkerProtocolTest.test_mock_worker_generates_valid_wav_and_stays_alive) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.067s\n\nOK",
+  "stdout_tail": "",
+  "timed_out": false,
+  "verdict": "success",
+  "warnings": []
+}

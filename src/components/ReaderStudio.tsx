@@ -3,7 +3,7 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EpubReader, type ReaderFlow } from "@/lib/reader";
-import { api, mediaUrl } from "@/lib/tauri";
+import { api, wavObjectUrl } from "@/lib/tauri";
 import type { BookDetail, Fragment, GenerationProgress, NarrationProfile, ProgressState } from "@/lib/types";
 
 const voices = [
@@ -22,6 +22,8 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const readerRef = useRef<EpubReader | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioObjectUrlRef = useRef<string | null>(null);
+  const playbackRequestRef = useRef(0);
   const currentFragmentRef = useRef<string | null>(null);
   const linkedRef = useRef(true);
   const resumeRef = useRef<ProgressState | null>(null);
@@ -34,9 +36,17 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [durationSeconds, setDurationSeconds] = useState(0);
+  const [volume, setVolume] = useState(1);
   const activeChapter = useMemo(() => book.chapters.find((chapter) => chapter.index === chapterIndex) ?? book.chapters[0], [book.chapters, chapterIndex]);
   useEffect(() => { currentFragmentRef.current = currentFragmentId; }, [currentFragmentId]);
   useEffect(() => { linkedRef.current = linked; }, [linked]);
+  useEffect(() => () => {
+    audioRef.current?.pause();
+    if (audioObjectUrlRef.current) URL.revokeObjectURL(audioObjectUrlRef.current);
+  }, []);
 
   const activeProfile = useMemo(() => book.profiles.find((profile) => profile.id === profileId) ?? book.profiles[0], [book.profiles, profileId]);
 
@@ -61,7 +71,15 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
     }).then(async () => {
       const progress = await api.loadProgress(book.summary.id).catch(() => null);
       if (progress?.reading_locator) await reader.goTo(progress.reading_locator);
-      if (progress) { setLinked(progress.linked); setCurrentFragmentId(progress.listening_fragment_id ?? null); resumeRef.current = progress; }
+      if (progress) {
+        const resumedChapter = progress.reading_locator
+          ? book.chapters.find((chapter) => chapter.href.split("#")[0] === progress.reading_locator?.href.split("#")[0])
+          : null;
+        if (resumedChapter) setChapterIndex(resumedChapter.index);
+        setLinked(progress.linked);
+        setCurrentFragmentId(progress.listening_fragment_id ?? null);
+        resumeRef.current = progress;
+      }
     }).catch((error) => setMessage(String(error)));
     return () => { reader.destroy(); readerRef.current = null; };
     // Opening a new book or changing flow must rebuild the rendition.
@@ -108,29 +126,83 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
 
   const playFragment = async (fragmentId: string) => {
     if (!activeProfile) return;
+    const requestId = ++playbackRequestRef.current;
     const index = fragments.findIndex((fragment) => fragment.id === fragmentId);
     const path = await api.generatedAudio(fragmentId, activeProfile.id);
+    if (requestId !== playbackRequestRef.current) return;
     if (!path) {
       setMessage("This sentence is not generated yet. Start generate while reading.");
       return;
     }
     audioRef.current?.pause();
-    const audio = new Audio(mediaUrl(path));
+    if (audioObjectUrlRef.current) URL.revokeObjectURL(audioObjectUrlRef.current);
+    let objectUrl: string;
+    try {
+      objectUrl = await wavObjectUrl(path);
+    } catch (error) {
+      setMessage(`Generated audio could not be loaded: ${String(error)}`);
+      return;
+    }
+    if (requestId !== playbackRequestRef.current) {
+      URL.revokeObjectURL(objectUrl);
+      return;
+    }
+    audioObjectUrlRef.current = objectUrl;
+    const audio = new Audio(objectUrl);
+    audio.volume = volume;
     audioRef.current = audio;
+    setElapsedSeconds(0);
+    setDurationSeconds(0);
     setCurrentFragmentId(fragmentId);
     if (linkedRef.current) await readerRef.current?.goTo(fragments[index]?.locator ?? { href: activeChapter?.href ?? "", cfi: null, css_selector: null, text_occurrence: 0, source_text_hash: "" });
     const resume = resumeRef.current;
     if (resume?.listening_fragment_id === fragmentId && resume.listening_offset_ms > 0) {
       audio.addEventListener("loadedmetadata", () => { audio.currentTime = Math.min(audio.duration || Infinity, resume.listening_offset_ms / 1000); resumeRef.current = null; }, { once: true });
     }
+    audio.onloadedmetadata = () => setDurationSeconds(Number.isFinite(audio.duration) ? audio.duration : 0);
+    audio.onplay = () => setIsPlaying(true);
+    audio.onpause = () => setIsPlaying(false);
+    audio.onerror = () => {
+      setIsPlaying(false);
+      setMessage("The generated sentence could not be played. Check the desktop audio output and restart playback.");
+    };
     audio.onended = () => {
+      setIsPlaying(false);
       const next = fragments[index + 1];
       if (next) void playFragment(next.id);
     };
     audio.ontimeupdate = () => {
+      setElapsedSeconds(audio.currentTime);
       api.saveProgress({ book_id: book.summary.id, reading_locator: null, listening_fragment_id: fragmentId, listening_offset_ms: Math.round(audio.currentTime * 1000), linked: linkedRef.current }).catch(() => undefined);
     };
-    await audio.play();
+    try {
+      await audio.play();
+    } catch (error) {
+      setMessage(`Playback could not start: ${String(error)}`);
+    }
+  };
+
+  const togglePlayback = () => {
+    const audio = audioRef.current;
+    if (audio) {
+      if (audio.paused) void audio.play().catch((error) => setMessage(`Playback could not resume: ${String(error)}`));
+      else audio.pause();
+      return;
+    }
+    const target = currentFragmentId ?? fragments[0]?.id;
+    if (target) void playFragment(target);
+  };
+
+  const seek = (seconds: number) => {
+    const audio = audioRef.current;
+    if (!audio || !Number.isFinite(seconds)) return;
+    audio.currentTime = Math.min(Math.max(seconds, 0), audio.duration || seconds);
+    setElapsedSeconds(audio.currentTime);
+  };
+
+  const changeVolume = (nextVolume: number) => {
+    setVolume(nextVolume);
+    if (audioRef.current) audioRef.current.volume = nextVolume;
   };
 
   const generate = async (mode: "current_and_next" | "full_book") => {
@@ -250,7 +322,10 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
         </div>
         <div className="chapter-list" aria-label="Chapters">
           {book.chapters.map((chapter) => (
-            <button key={chapter.id} className={chapter.index === chapterIndex ? "active" : ""} onClick={() => setChapterIndex(chapter.index)}>
+            <button key={chapter.id} className={chapter.index === chapterIndex ? "active" : ""} onClick={() => {
+              setChapterIndex(chapter.index);
+              void readerRef.current?.goTo({ href: chapter.href, cfi: null, css_selector: null, text_occurrence: 0, source_text_hash: "" });
+            }}>
               <span className="chapter-number">{String(chapter.index + 1).padStart(2, "0")}</span>
               <strong>{chapter.title}</strong>
               <small>{chapter.fragment_count} sentences{chapter.selected ? "" : " · skipped"}</small>
@@ -275,12 +350,20 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
         {message && <div className="studio-message">{message}<button onClick={() => setMessage(null)}>×</button></div>}
         <div className="reader-frame" ref={containerRef} />
         <footer className="transport-bar">
-          <button className="play-button" aria-label="Play current sentence" onClick={() => { const target = currentFragmentId ?? fragments[0]?.id; if (target) void playFragment(target); }}>▶</button>
+          <button className="play-button" aria-label={isPlaying ? "Pause narration" : "Play narration"} onClick={togglePlayback}>{isPlaying ? "Ⅱ" : "▶"}</button>
           <div>
             <strong>{activeChapter?.title ?? "No chapter"}</strong>
             <small>{currentFragment?.source_text ?? "Click a sentence in the book to play it."}</small>
+            <div className="playback-status">
+              <span>{formatTime(elapsedSeconds)}</span>
+              <input aria-label="Sentence playback position" type="range" min="0" max={Math.max(durationSeconds, 0.01)} step="0.01" value={Math.min(elapsedSeconds, Math.max(durationSeconds, 0.01))} onChange={(event) => seek(Number(event.target.value))} />
+              <span>{formatTime(durationSeconds)}</span>
+            </div>
           </div>
-          <button className="text-button" onClick={() => void correctPronunciation()}>Fix pronunciation</button>
+          <div className="transport-actions">
+            <label>Output {Math.round(volume * 100)}%<input aria-label="Narration output volume" type="range" min="0" max="1" step="0.05" value={volume} onChange={(event) => changeVolume(Number(event.target.value))} /></label>
+            <button className="text-button" onClick={() => void correctPronunciation()}>Fix pronunciation</button>
+          </div>
         </footer>
       </section>
       <aside className="export-drawer">
@@ -293,4 +376,10 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
       </aside>
     </main>
   );
+}
+
+function formatTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const wholeSeconds = Math.floor(seconds);
+  return `${Math.floor(wholeSeconds / 60)}:${String(wholeSeconds % 60).padStart(2, "0")}`;
 }

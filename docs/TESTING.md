@@ -17,6 +17,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo check -p audiobookgen-desktop
 ```
 
+Frontend regression coverage includes:
+
+- `src/lib/reader.test.ts`: sentence ranges inside one paragraph, repeated text, and whitespace around EPUB drop caps or inline markup.
+- `src/lib/tauri.test.ts`: Tauri detection, asset paths, and explicit WAV Blob creation for WebKit playback.
+
 The mock worker must remain dependency-light. It verifies the persistent JSON Lines protocol and valid 24 kHz WAV output without downloading Kokoro or importing PyTorch.
 
 ## EPUB fixture matrix
@@ -53,6 +58,14 @@ The English corpus should include names, initials, abbreviations, dates, times, 
 - cache-key changes caused by narrator, speed, model, or pronunciation edits
 
 ## Audio checks
+
+Inspect generated sentence signal levels with:
+
+```bash
+python3 scripts/check_audio_levels.py --require-signal
+```
+
+The report labels each 16-bit PCM WAV as `OK`, `LOW`, or `SILENT` and prints duration, RMS level, and peak level in dBFS. Pass file paths to inspect a smaller set.
 
 The official Kokoro backend is evaluated separately from the deterministic mock worker. Release candidates should record:
 
