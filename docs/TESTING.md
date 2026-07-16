@@ -81,3 +81,12 @@ M4B checks verify chapter start/end times and metadata. Narrated EPUB checks ver
 ## Crash recovery
 
 Kill the worker during one sentence, restart the application, and resume the same job. Completed sentence files must remain cache hits, `.part.wav` files must never be treated as finished output, and SQLite must remain readable.
+
+## Real worker end-to-end
+
+`python3 scripts/e2e_real_worker.py` drives the actual Kokoro worker through
+the app's managed venv and downloaded model (skips cleanly when either is
+missing, so CI stays on the mock E2E). It catches import-time breakage in the
+kokoro dependency chain that the mock path cannot see. Run it after any change
+to `services/tts-worker/pyproject.toml` or the worker bootstrap in
+`apps/desktop/src-tauri/src/commands.rs`.

@@ -125,17 +125,19 @@ impl AppRuntime {
                 .and_then(Path::parent)
                 .ok_or_else(|| anyhow!("invalid managed Python path"))?
                 .to_path_buf();
-            // A version-stamped marker proves the last install finished. Without it
-            // (e.g. a venv left behind by a failed install, or one built against an
-            // unsupported interpreter) the environment is rebuilt from scratch.
+            // The marker records the interpreter version and a hash of the worker's
+            // pyproject. A missing marker means the last install never finished; a
+            // stale hash means the dependency set changed. Either way the packages
+            // are reinstalled, and the venv itself is only rebuilt when absent.
             let marker = venv_dir.join(".audiobookgen-install-ok");
+            let expected_marker = worker_install_stamp(&worker_root)?;
             let marker_current = std::fs::read_to_string(&marker)
-                .map(|content| content.trim() == WORKER_PYTHON_VERSION)
+                .map(|content| content.trim() == expected_marker)
                 .unwrap_or(false);
             if python.exists() && marker_current {
                 return Ok(());
             }
-            if venv_dir.exists() {
+            if !python.exists() && venv_dir.exists() {
                 std::fs::remove_dir_all(&venv_dir)
                     .context("removing the stale managed Python environment")?;
             }
@@ -151,13 +153,15 @@ impl AppRuntime {
             if uv_available {
                 // uv downloads a managed interpreter, so this works even when the
                 // system Python is newer than Kokoro supports (>=3.10,<3.14).
-                let status = std::process::Command::new(&uv)
-                    .args(["venv", "--python", WORKER_PYTHON_VERSION])
-                    .arg(&venv_dir)
-                    .status()
-                    .context("creating the managed Python environment with uv")?;
-                if !status.success() {
-                    bail!("uv venv failed with {status}");
+                if !python.exists() {
+                    let status = std::process::Command::new(&uv)
+                        .args(["venv", "--python", WORKER_PYTHON_VERSION])
+                        .arg(&venv_dir)
+                        .status()
+                        .context("creating the managed Python environment with uv")?;
+                    if !status.success() {
+                        bail!("uv venv failed with {status}");
+                    }
                 }
                 let status = std::process::Command::new(&uv)
                     .args(["pip", "install", "--python"])
@@ -168,21 +172,23 @@ impl AppRuntime {
                 if !status.success() {
                     bail!("uv pip install failed with {status}");
                 }
-                std::fs::write(&marker, WORKER_PYTHON_VERSION)?;
+                std::fs::write(&marker, &expected_marker)?;
                 return Ok(());
             }
-            let status = std::process::Command::new(&bootstrap)
-                .args(["-m", "venv"])
-                .arg(&venv_dir)
-                .status()
-                .with_context(|| {
-                    format!(
-                        "Python 3.10-3.13 (or uv) is required to install Kokoro. Could not run {}",
-                        bootstrap.display()
-                    )
-                })?;
-            if !status.success() {
-                bail!("creating the managed Python environment failed with {status}");
+            if !python.exists() {
+                let status = std::process::Command::new(&bootstrap)
+                    .args(["-m", "venv"])
+                    .arg(&venv_dir)
+                    .status()
+                    .with_context(|| {
+                        format!(
+                            "Python 3.10-3.13 (or uv) is required to install Kokoro. Could not run {}",
+                            bootstrap.display()
+                        )
+                    })?;
+                if !status.success() {
+                    bail!("creating the managed Python environment failed with {status}");
+                }
             }
             let status = std::process::Command::new(&python)
                 .args([
@@ -198,7 +204,7 @@ impl AppRuntime {
             if !status.success() {
                 bail!("installing the Kokoro worker failed with {status}");
             }
-            std::fs::write(&marker, WORKER_PYTHON_VERSION)?;
+            std::fs::write(&marker, &expected_marker)?;
             Ok(())
         })
         .await??;
@@ -215,6 +221,16 @@ impl AppRuntime {
 
 // Kokoro's dependency chain supports >=3.10,<3.14; keep this inside that range.
 const WORKER_PYTHON_VERSION: &str = "3.12";
+
+/// Identity of a finished worker install: interpreter version plus a hash of the
+/// worker's pyproject, so dependency changes trigger a reinstall on upgrade.
+fn worker_install_stamp(worker_root: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let pyproject = std::fs::read(worker_root.join("pyproject.toml"))
+        .context("reading the worker pyproject for the install stamp")?;
+    let digest = hex::encode(Sha256::digest(&pyproject));
+    Ok(format!("{WORKER_PYTHON_VERSION}:{digest}"))
+}
 
 fn managed_python(data_dir: &Path) -> PathBuf {
     if cfg!(windows) {

@@ -47,3 +47,11 @@
 - **UI redesign**: replaced the dark acid-lime theme with an editorial paper aesthetic (warm paper ground, ink text, hairline rules, serif display via Iowan Old Style/Palatino/Georgia stack, letterspaced uppercase labels, monochrome buttons that invert on hover). All CSS class names kept; markup changes limited to the wordmark. Reader highlight color moved to a soft highlighter yellow.
 - **Tests added (TDD)**: `epub.rs::counts_footnote_elements_once_each` (locks the double-count fix, covers aside/epub:type/doc-note/doc-endnote variants); `src/lib/tauri.test.ts` (isTauri/mediaUrl behavior outside Tauri). `scripts/validate_repo.py` now requires the reconstructed `src/lib` modules and the icon so a future incomplete checkout fails validation.
 - Verified: clippy -D warnings, fmt, 10 Rust tests, tsc, Next build, 7 vitest tests, repo validator, 4 pytest, app boot on Hyprland.
+
+## Follow-up (2026-07-16, later): narration actually works end to end
+
+- Kokoro generation failed after install with `ModuleNotFoundError: click`: modern typer stopped pulling click transitively while spacy imports it directly. Pinned `click>=8,<9` in the worker pyproject.
+- Next failure: misaki tries to download spaCy's `en_core_web_sm` mid-generation and spacy's downloader falls back to `uv pip` without VIRTUAL_ENV. Pinned the model wheel URL as a normal dependency (`allow-direct-references` for hatchling).
+- Install marker now stamps python version + pyproject sha256, so dependency changes trigger an incremental `uv pip install` on next launch instead of being ignored; the venv is only wiped when its interpreter is missing.
+- Added `scripts/e2e_real_worker.py`: full ping/generate/shutdown against the real venv + model; verified locally ("Real worker E2E passed: 60455 frames at 24000 Hz"). Documented in docs/TESTING.md.
+- Also this session: frameless window + drag region, XWayland default (fixes right-edge clipping), blob: CSP for epub.js iframes (fixes blank reader), always-visible model install banner with progress and retry, single import button, motion pass, keyboard QoL.

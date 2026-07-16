@@ -7,7 +7,13 @@ dependencies = [
   "kokoro>=0.9.4,<1",
   "soundfile>=0.12,<1",
   "huggingface-hub>=0.28,<1",
-  "numpy>=1.26,<3"
+  "numpy>=1.26,<3",
+  # spacy (via kokoro -> misaki) imports click directly, but modern typer no
+  # longer pulls it in transitively, so pin it explicitly.
+  "click>=8,<9",
+  # misaki loads spacy's English model at generation time and would otherwise
+  # try to download it mid-narration; ship it as a normal pinned dependency.
+  "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 ]
 
 [project.optional-dependencies]
@@ -19,3 +25,7 @@ audiobookgen-worker = "audiobookgen_worker.main:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# The spaCy English model is only distributed as a release wheel URL.
+allow-direct-references = true
