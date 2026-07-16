@@ -30,6 +30,12 @@ pub struct AppRuntime {
     pub core: Arc<Core>,
     worker: Arc<Mutex<Option<Arc<WorkerSupervisor>>>>,
     jobs: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    /// Playhead anchor: generation jobs prioritize the first ungenerated
+    /// sentence at or after this fragment, so clicking a sentence pulls the
+    /// queue to it between sentence generations.
+    anchor: Arc<std::sync::Mutex<Option<Uuid>>>,
+    /// The running playhead-fill job, if any: (book, profile, job id).
+    anchor_job: Arc<Mutex<Option<(Uuid, Uuid, String)>>>,
     worker_root: PathBuf,
     python: PathBuf,
     bootstrap_python: Option<PathBuf>,
@@ -114,6 +120,8 @@ impl AppRuntime {
             core,
             worker: Arc::new(Mutex::new(None)),
             jobs: Arc::new(Mutex::new(HashMap::new())),
+            anchor: Arc::new(std::sync::Mutex::new(None)),
+            anchor_job: Arc::new(Mutex::new(None)),
             worker_root,
             python,
             bootstrap_python,
@@ -1124,7 +1132,60 @@ pub async fn queue_generation(
     runtime: tauri::State<'_, AppRuntime>,
     request: QueueGeneration,
 ) -> std::result::Result<String, String> {
+    Ok(spawn_generation(app, runtime.inner().clone(), request).await)
+}
+
+/// Re-anchor the generation queue to a sentence and ensure a fill job is
+/// running for this book and profile. Reuses the running fill job when one
+/// exists (the loop re-reads the anchor between sentences); otherwise starts
+/// a full-book job that begins at the anchor and wraps to earlier text.
+#[tauri::command]
+pub async fn anchor_generation(
+    app: AppHandle,
+    runtime: tauri::State<'_, AppRuntime>,
+    book_id: Uuid,
+    profile_id: Uuid,
+    fragment_id: Uuid,
+) -> std::result::Result<String, String> {
     let runtime = runtime.inner().clone();
+    *runtime.anchor.lock().expect("anchor lock") = Some(fragment_id);
+    let active = runtime.anchor_job.lock().await.clone();
+    if let Some((book, profile, job)) = active {
+        if book == book_id
+            && profile == profile_id
+            && runtime.jobs.lock().await.contains_key(&job)
+        {
+            return Ok(job);
+        }
+    }
+    let request = QueueGeneration {
+        book_id,
+        profile_id,
+        mode: GenerationMode::FullBook,
+        current_chapter_index: None,
+        selected_chapter_indices: Vec::new(),
+    };
+    let job_id = spawn_generation(app, runtime.clone(), request).await;
+    *runtime.anchor_job.lock().await = Some((book_id, profile_id, job_id.clone()));
+    Ok(job_id)
+}
+
+/// Move the playhead anchor without starting a job, so a running fill job
+/// follows normal playback through already-cached text.
+#[tauri::command]
+pub async fn set_generation_anchor(
+    runtime: tauri::State<'_, AppRuntime>,
+    fragment_id: Uuid,
+) -> std::result::Result<(), String> {
+    *runtime.anchor.lock().expect("anchor lock") = Some(fragment_id);
+    Ok(())
+}
+
+async fn spawn_generation(
+    app: AppHandle,
+    runtime: AppRuntime,
+    request: QueueGeneration,
+) -> String {
     let job_id = Uuid::new_v4().to_string();
     let cancelled = Arc::new(AtomicBool::new(false));
     runtime
@@ -1151,7 +1212,7 @@ pub async fn queue_generation(
         }
         runtime.jobs.lock().await.remove(&task_job_id);
     });
-    Ok(job_id)
+    job_id
 }
 
 #[tauri::command]
@@ -1241,8 +1302,23 @@ async fn run_generation(
     } else {
         None
     };
+    let ordering: HashMap<Uuid, usize> = fragments
+        .iter()
+        .enumerate()
+        .map(|(position, fragment)| (fragment.id, position))
+        .collect();
+    let mut pending = fragments;
     let mut completed = 0usize;
-    for mut fragment in fragments {
+    while !pending.is_empty() {
+        let anchor_value = *runtime.anchor.lock().expect("anchor lock");
+        let pending_positions: Vec<usize> = pending
+            .iter()
+            .map(|fragment| ordering[&fragment.id])
+            .collect();
+        let anchor_position =
+            anchor_value.and_then(|fragment_id| ordering.get(&fragment_id).copied());
+        let pick = anchored_pick(&pending_positions, anchor_position);
+        let mut fragment = pending.remove(pick);
         if cancelled.load(Ordering::Relaxed) {
             app.emit(
                 "generation-progress",
@@ -1395,6 +1471,49 @@ async fn run_generation(
         },
     )?;
     Ok(())
+}
+
+/// Choose the next sentence for a playhead-anchored fill job.
+///
+/// `pending_positions` are the reading-order positions of the not-yet-
+/// generated sentences (ascending); `anchor` is the playhead's position.
+/// Returns the index into `pending_positions` of the first sentence at or
+/// after the anchor, wrapping to the earliest remaining sentence once
+/// everything ahead of the listener is done. No anchor means reading order.
+fn anchored_pick(pending_positions: &[usize], anchor: Option<usize>) -> usize {
+    anchor
+        .and_then(|anchor_position| {
+            pending_positions
+                .iter()
+                .position(|position| *position >= anchor_position)
+        })
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod anchored_pick_tests {
+    use super::anchored_pick;
+
+    #[test]
+    fn no_anchor_keeps_reading_order() {
+        assert_eq!(anchored_pick(&[0, 1, 2, 3], None), 0);
+    }
+
+    #[test]
+    fn anchor_jumps_to_first_pending_at_or_after_it() {
+        // Sentences 0-1 and 5 already generated; playhead at position 4.
+        assert_eq!(anchored_pick(&[2, 3, 4, 6, 7], Some(4)), 2);
+    }
+
+    #[test]
+    fn anchor_past_all_pending_wraps_to_earliest() {
+        assert_eq!(anchored_pick(&[2, 3, 4], Some(9)), 0);
+    }
+
+    #[test]
+    fn anchor_between_pending_positions_picks_next_forward() {
+        assert_eq!(anchored_pick(&[1, 6, 8], Some(3)), 1);
+    }
 }
 
 fn write_silence(path: &Path, duration_ms: u64, sample_rate: u32) -> Result<()> {

@@ -67,6 +67,8 @@ pub fn run() {
             commands::get_generated_segment,
             commands::preview_voice,
             commands::queue_generation,
+            commands::anchor_generation,
+            commands::set_generation_anchor,
             commands::cancel_generation,
             commands::get_generated_audio,
             commands::export_m4a,

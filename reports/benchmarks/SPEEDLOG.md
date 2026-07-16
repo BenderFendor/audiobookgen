@@ -20,6 +20,8 @@ second). This ledger is the single answer to "what did each change buy."
 
 | 2026-07-16 | M3-B3a eager prefill + fixed freqs_cis shape + persistent inductor cache | (this commit) | balanced | 32.0 | 0.45 | 5.0 | recompile stalls eliminated: every sentence prefill ~0.3 s (was 3-21 s); compile warmup 64 s → 15 s with populated cache, one-time per process; decode RTF 0.39 |
 
+| 2026-07-16 | M4 playhead-anchored streaming scheduler | (this commit) | — | — | — | — | UX change, no engine speed delta: click-to-play anywhere, fill job follows playhead, buffering state replaces the dead-end |
+
 Full baseline detail: `voxtral-baseline-suite-2026-07-16.md`. Codec decode is
 negligible (~0.03 s/sentence after warmup); loop overhead ~0. Rows are
 appended by each optimization PR; the M1 baseline is row zero.

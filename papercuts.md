@@ -88,3 +88,9 @@
 
 ---
 
+## 2026-07-16 12:36
+
+**What happened:** post-tool TS lint hook fails: tsgolint executable missing (oxlint-tsgolint not installed); TS changes can't be hook-verified, fell back to npm typecheck
+
+---
+

@@ -140,11 +140,34 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
     if (!activeProfile) return;
     const requestId = ++playbackRequestRef.current;
     const index = fragments.findIndex((fragment) => fragment.id === fragmentId);
-    const segment = await api.generatedSegment(fragmentId, activeProfile.id);
+    // Keep the background fill job anchored to the playhead so generation
+    // always runs just ahead of the listener.
+    api.setGenerationAnchor(fragmentId).catch(() => undefined);
+    let segment = await api.generatedSegment(fragmentId, activeProfile.id);
     if (requestId !== playbackRequestRef.current) return;
     if (!segment) {
-      setMessage("This sentence is not generated yet. Start generate while reading.");
-      return;
+      // Not generated yet: anchor a fill job to this sentence and wait for
+      // it instead of dead-ending. Newer clicks supersede the wait.
+      setMessage("Preparing narration from this sentence…");
+      try {
+        const job = await api.anchorGeneration(book.summary.id, activeProfile.id, fragmentId);
+        setJobId(job);
+      } catch (error) {
+        setMessage(String(error));
+        return;
+      }
+      const deadline = Date.now() + 180_000;
+      while (!segment) {
+        if (requestId !== playbackRequestRef.current) return;
+        if (Date.now() > deadline) {
+          setMessage("Narration is taking too long to prepare. Check the Models page and the generation job.");
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        segment = await api.generatedSegment(fragmentId, activeProfile.id);
+      }
+      if (requestId !== playbackRequestRef.current) return;
+      setMessage(null);
     }
     const path = segment.audio_path;
     const fragmentText = fragments[index]?.source_text ?? "";

@@ -242,6 +242,13 @@ dependencies or models added to the repo.
 
 ## 6. Milestones
 
+Status 2026-07-16: M1-M4 landed (tags `voxtral-speed-m1-m2`,
+`voxtral-speed-m3-b2`, `voxtral-speed-m3-b3a`, `voxtral-speed-m4-scheduler`).
+Cold start 5 s, Balanced wall RTF 0.45 at 32 FPS, click-anywhere streaming
+playback wired. Outstanding: B2 listening gate, live desktop E2E. B3/B4 full
+CUDA-graph capture deferred (measured loop overhead ~0); ConvRot (M5) still
+plan-only pending a re-profile.
+
 1. **M1 — Profile + baseline suite** (B0): frame-time breakdown and baseline
    numbers for all three profiles, including wall RTF and time-to-first-audio.
 2. **M2 — Cold start** (B1): worker ready < 20 s.

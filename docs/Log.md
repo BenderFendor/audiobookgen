@@ -3,6 +3,24 @@
 This log records user-visible behavior, architecture, setup, and verification
 changes so release notes remain grounded in repository artifacts.
 
+## 2026-07-16 — Voxtral speed program: solver speedups and streaming playback
+
+- Batched CFG conditional/unconditional velocity passes (8 batch-1 → 4
+  batch-2 acoustic calls per frame): compatibility 16→19.5 FPS, quality
+  7.6→11.3, balanced 23→33 FPS on the RTX 3060. Blinded listening vs the
+  baseline WAVs is the outstanding acceptance gate.
+- Eliminated Balanced compile stalls: eager prefill, fixed-size freqs_cis,
+  persistent inductor cache. Every sentence now prefills in ~0.3 s; mean
+  wall RTF 0.45 at 32 FPS; compile warmup 64 s → 15 s per process.
+- Playhead-anchored streaming playback: clicking any sentence anchors the
+  generation queue there and playback starts as soon as that sentence is
+  ready ("Preparing narration…" instead of the old "not generated yet"
+  dead-end). A full-book fill job follows the playhead, wraps to earlier
+  text once everything ahead is generated, and skips cached sentences. New
+  commands: `anchor_generation`, `set_generation_anchor`.
+- Ledger: `reports/benchmarks/SPEEDLOG.md`. Remaining release checks: B2
+  listening gate; live desktop click-to-play session on real hardware.
+
 ## 2026-07-16 — Voxtral speed program: benchmark suite and quantized cache
 
 - Added `--suite` mode to `benchmark_voxtral.py`: fixed five-sentence corpus,
