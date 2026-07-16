@@ -303,13 +303,34 @@ def generate_speech_fast(
     )
 
 
+def _predict_velocity_cfg(acoustic, x_t, llm_hidden, zeros, t, cfg_alpha):
+    """One CFG velocity evaluation as a single batch-2 forward.
+
+    Same CFG equation as two separate conditional/unconditional passes, but
+    the two branches share one kernel launch sequence, which matters at the
+    tiny batch sizes of per-frame decoding.
+    """
+    if zeros is None:
+        # .clone() prevents CUDA graph buffer reuse conflicts with
+        # reduce-overhead compile
+        return acoustic.predict_velocity(x_t, llm_hidden, t).clone()
+    batched_v = acoustic.predict_velocity(
+        torch.cat((x_t, x_t), dim=0),
+        torch.cat((llm_hidden, zeros), dim=0),
+        t,
+    ).clone()
+    v_cond, v_uncond = batched_v.chunk(2, dim=0)
+    return cfg_alpha * v_cond + (1 - cfg_alpha) * v_uncond
+
+
 @torch.no_grad()
 def _decode_one_frame_fast(acoustic, llm_hidden, config, flow_steps=3, cfg_alpha=1.2):
     """
     Fast acoustic frame decode with reduced steps and optional CFG.
 
-    With flow_steps=3, cfg_alpha=1.2: only 4 acoustic forward passes (vs 14)
-    Default (flow_steps=8, cfg_alpha=1.2): 14 acoustic forward passes
+    The midpoint solver makes 2 velocity evaluations per interval; with CFG
+    each evaluation is one batch-2 forward, so flow_steps=3 costs 4 acoustic
+    forward passes and flow_steps=8 costs 14.
     """
     B = llm_hidden.shape[0]
     device = llm_hidden.device
@@ -335,19 +356,12 @@ def _decode_one_frame_fast(acoustic, llm_hidden, config, flow_steps=3, cfg_alpha
         dt = (timesteps[i + 1] - timesteps[i]).item()
 
         # Midpoint method (2nd order) for better accuracy with fewer steps
-        # .clone() prevents CUDA graph buffer reuse conflicts with reduce-overhead compile
-        v1 = acoustic.predict_velocity(x_t, llm_hidden, t).clone()
-        if use_cfg:
-            v1_uncond = acoustic.predict_velocity(x_t, zeros, t).clone()
-            v1 = cfg_alpha * v1 + (1 - cfg_alpha) * v1_uncond
+        v1 = _predict_velocity_cfg(acoustic, x_t, llm_hidden, zeros, t, cfg_alpha)
 
         # Midpoint: evaluate at t + dt/2
         x_mid = x_t + v1 * (dt / 2)
         t_mid = t + dt / 2
-        v2 = acoustic.predict_velocity(x_mid, llm_hidden, t_mid).clone()
-        if use_cfg:
-            v2_uncond = acoustic.predict_velocity(x_mid, zeros, t_mid).clone()
-            v2 = cfg_alpha * v2 + (1 - cfg_alpha) * v2_uncond
+        v2 = _predict_velocity_cfg(acoustic, x_mid, llm_hidden, zeros, t_mid, cfg_alpha)
 
         # Update using midpoint velocity
         x_t = x_t + v2 * dt

@@ -13,7 +13,10 @@ second). This ledger is the single answer to "what did each change buy."
 | 2026-07-16 | baseline (M1) | 5464e73 | quality | 7.6 | 1.71 | 128.1 | decode RTF 1.66; acoustic solver 77% of frame time (8 flow steps) |
 | 2026-07-16 | baseline (M1) | 5464e73 | balanced | 23.2 | 1.94 | 128.1 | decode RTF 0.54; wall RTF skewed by 17 s + 9 s prefill shape recompiles on first two sentences (steady-state wall RTF ~0.55-0.62); 20.4 s one-time compile warmup |
 
-| 2026-07-16 | M2 quantized-weight disk cache | (this commit) | compatibility | 15.1 | — | 5.4 | generation untouched; WAV bitwise identical to slow path (sha256 d6314f7a); cache is 3.5 GB in the model dir |
+| 2026-07-16 | M2 quantized-weight disk cache | 5cb4641 | compatibility | 15.1 | — | 5.4 | generation untouched; WAV bitwise identical to slow path (sha256 d6314f7a); cache is 3.5 GB in the model dir |
+| 2026-07-16 | M3-B2 batched CFG (8 batch-1 → 4 batch-2 acoustic calls/frame) | (this commit) | compatibility | 19.5 | 0.77 | 6.3 | +21% FPS; frame time now backbone 68% / acoustic 31% |
+| 2026-07-16 | M3-B2 batched CFG | (this commit) | quality | 11.3 | 1.18 | 6.3 | +49% FPS |
+| 2026-07-16 | M3-B2 batched CFG | (this commit) | balanced | 33.0 | 0.79 | 6.3 | +42% FPS, decode RTF 0.38; prefill recompiles still hurt first sentences; compile warmup 64.3 s. QUALITY GATE PENDING: same CFG equation, but batch reduction order changes exact floats and the autoregressive loop amplifies them into a different rendering (duration shifts up to 4 s) — needs blinded listening vs baseline WAVs |
 
 Full baseline detail: `voxtral-baseline-suite-2026-07-16.md`. Codec decode is
 negligible (~0.03 s/sentence after warmup); loop overhead ~0. Rows are
