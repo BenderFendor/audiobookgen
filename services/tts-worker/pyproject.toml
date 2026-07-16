@@ -17,16 +17,27 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = []
+dev = [
+  "mypy>=1.15,<2",
+  "pytest>=8,<9",
+  "ruff>=0.12,<1",
+  "scipy>=1.14,<2",
+]
 # Maya1 voice-design TTS: quantized GGUF via llama.cpp plus the SNAC decoder.
 maya1 = [
   "llama-cpp-python>=0.3.2",
   "snac>=1.2.1",
   "torch>=2.2",
 ]
-# Voxtral is served by an external vLLM-Omni process; the worker only needs
-# the base install to talk to it.
-voxtral = []
+# Selective HQQ INT4 Voxtral inference adapted for 12 GB NVIDIA GPUs.
+voxtral = [
+  "torch>=2.11",
+  "torchao>=0.17,<0.18",
+  "hqq>=0.2.8,<0.3",
+  "safetensors>=0.5,<1",
+  "scipy>=1.14,<2",
+  "tiktoken>=0.9,<1",
+]
 
 [project.scripts]
 audiobookgen-worker = "audiobookgen_worker.main:main"

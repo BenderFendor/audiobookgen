@@ -152,8 +152,18 @@ export interface EngineModelStatus {
   installed: boolean;
   path: string;
   quant: string | null;
-  server_reachable: boolean | null;
-  server_url: string | null;
+  runtime_installed: boolean | null;
+  voices: string[];
+  accelerator_message: string | null;
+  hardware_supported: boolean | null;
+}
+
+export interface ModelProgress {
+  engine: TtsEngine;
+  phase: string;
+  message: string;
+  current: number | null;
+  total: number | null;
 }
 
 export interface AppSettings {
@@ -161,7 +171,9 @@ export interface AppSettings {
   maya1_quant: string;
   maya1_device: string;
   maya1_temperature: number;
-  voxtral_server_url: string;
+  voxtral_profile: "balanced" | "quality" | "compatibility";
+  voxtral_seed: number;
+  voxtral_license_accepted: boolean;
   voxtral_default_voice: string;
 }
 

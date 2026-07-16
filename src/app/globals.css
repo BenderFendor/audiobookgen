@@ -192,7 +192,11 @@ select { width: 100%; color: var(--ink); background: var(--paper); border: 1px s
 .models-root h2, .model-card h2 { margin: 0; font-family: var(--serif); font-weight: 500; font-size: 1.15rem; }
 .models-root small { color: var(--muted); }
 .models-root .secondary-button { align-self: flex-start; }
-.model-stage { margin: 0; color: var(--oxblood); font-size: .84rem; }
+.model-progress { display: grid; gap: 7px; margin-top: 4px; }
+.model-progress div { display: flex; justify-content: space-between; gap: 18px; font-size: .8rem; }
+.model-progress div span { color: var(--muted); text-align: right; }
+.model-progress progress { width: 100%; height: 8px; accent-color: var(--oxblood); }
+.model-progress small { color: var(--muted); font-family: var(--mono); }
 .model-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; align-items: start; }
 .model-card { display: flex; flex-direction: column; gap: 12px; }
 .model-card header { display: flex; justify-content: space-between; align-items: center; }
@@ -200,7 +204,9 @@ select { width: 100%; color: var(--ink); background: var(--paper); border: 1px s
 .model-card .model-path { color: var(--muted); font-family: var(--mono); font-size: .68rem; overflow-wrap: anywhere; }
 .model-card input, .model-card select { border: 1px solid var(--line); background: var(--paper); padding: 8px 10px; font: inherit; font-size: .84rem; }
 .server-state { font-size: .78rem; }
-.serve-command { background: var(--ink); color: var(--paper); font-family: var(--mono); font-size: .7rem; padding: 12px 14px; overflow-x: auto; white-space: pre; }
+.license-consent { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; color: var(--muted); font-size: .78rem; line-height: 1.45; }
+.license-consent input { margin-top: 3px; }
+.accelerator-state { border-left: 2px solid var(--oxblood); padding-left: 9px; font-size: .78rem !important; }
 .preview-row { display: flex; gap: 8px; }
 .preview-row select, .preview-row input { flex: 1; min-width: 0; }
 .preview-row button { border: 1px solid var(--ink); background: none; padding: 8px 12px; font-size: .7rem; letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }

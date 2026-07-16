@@ -15,8 +15,8 @@ export const KOKORO_VOICES = [
 ] as const;
 
 export const VOXTRAL_PRESET_VOICES = [
-  "casual_male", "casual_female", "calm_male", "calm_female",
-  "narrator_male", "narrator_female", "upbeat_male", "upbeat_female",
+  "neutral_female", "neutral_male", "cheerful_female",
+  "casual_female", "casual_male",
 ] as const;
 
 export function kokoroVoiceLabel(voice: string): string {

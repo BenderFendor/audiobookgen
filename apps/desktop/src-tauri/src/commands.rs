@@ -1,4 +1,5 @@
 use crate::platform::SleepGuard;
+use crate::voxtral;
 use anyhow::{Context, Result, anyhow, bail};
 use audiobookgen_core::Core;
 use audiobookgen_core::cache::segment_cache_key;
@@ -16,7 +17,7 @@ use chrono::Utc;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::net::ToSocketAddrs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,9 +45,13 @@ pub struct EngineModelStatus {
     pub path: PathBuf,
     /// For maya1: which quantization the status refers to.
     pub quant: Option<String>,
-    /// For voxtral: whether the vLLM-Omni server answered.
-    pub server_reachable: Option<bool>,
-    pub server_url: Option<String>,
+    /// For voxtral: whether the worker environment contains INT4 dependencies.
+    pub runtime_installed: Option<bool>,
+    /// Voice embeddings found in the installed model directory.
+    pub voices: Vec<String>,
+    /// Human-readable accelerator/runtime compatibility detail.
+    pub accelerator_message: Option<String>,
+    pub hardware_supported: Option<bool>,
 }
 
 const SETTINGS_KEY: &str = "app_settings";
@@ -61,6 +66,16 @@ struct GenerationProgress {
     fragment_id: Option<String>,
     state: &'static str,
     message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelProgress {
+    engine: String,
+    phase: String,
+    message: String,
+    current: Option<u64>,
+    total: Option<u64>,
 }
 
 impl AppRuntime {
@@ -164,7 +179,8 @@ impl AppRuntime {
                 "temperature": settings.maya1_temperature,
             }),
             "voxtral" => serde_json::json!({
-                "server_url": settings.voxtral_server_url,
+                "profile": settings.voxtral_profile,
+                "seed": settings.voxtral_seed,
             }),
             _ => serde_json::json!({}),
         }
@@ -176,6 +192,7 @@ impl AppRuntime {
     async fn worker_for_engine(&self, engine: &str) -> Result<Arc<WorkerSupervisor>> {
         let extras: &[&str] = match engine {
             "maya1" => &["maya1"],
+            "voxtral" => &["voxtral"],
             _ => &[],
         };
         let mut slot = self.worker.lock().await;
@@ -220,7 +237,8 @@ impl AppRuntime {
             // venv itself is only rebuilt when absent.
             let marker = venv_dir.join(".audiobookgen-install-ok");
             let stamp = worker_install_stamp(&worker_root)?;
-            let (installed_stamp, installed_extras) = std::fs::read_to_string(&marker)
+            let (installed_stamp, installed_extras, installed_accelerator) =
+                std::fs::read_to_string(&marker)
                 .map(|content| parse_install_marker(content.trim()))
                 .unwrap_or_default();
             let mut wanted_extras: Vec<String> = installed_extras.clone();
@@ -230,7 +248,20 @@ impl AppRuntime {
                 }
             }
             wanted_extras.sort();
-            if python.exists() && installed_stamp == stamp && installed_extras == wanted_extras {
+            let wanted_accelerator = if wanted_extras.iter().any(|extra| extra == "maya1")
+                && cuda_build_available()
+            {
+                "cuda"
+            } else {
+                "cpu"
+            };
+            let needs_cuda_build =
+                wanted_accelerator == "cuda" && !llama_cuda_available(&python);
+            if python.exists()
+                && installed_stamp == stamp
+                && installed_extras == wanted_extras
+                && installed_accelerator == wanted_accelerator
+            {
                 return Ok(false);
             }
             let install_spec = if wanted_extras.is_empty() {
@@ -238,7 +269,8 @@ impl AppRuntime {
             } else {
                 format!("{}[{}]", worker_root.to_string_lossy(), wanted_extras.join(","))
             };
-            let expected_marker = format_install_marker(&stamp, &wanted_extras);
+            let expected_marker =
+                format_install_marker(&stamp, &wanted_extras, wanted_accelerator);
             if !python.exists() && venv_dir.exists() {
                 std::fs::remove_dir_all(&venv_dir)
                     .context("removing the stale managed Python environment")?;
@@ -268,11 +300,30 @@ impl AppRuntime {
                 let status = std::process::Command::new(&uv)
                     .args(["pip", "install", "--python"])
                     .arg(&python)
+                    .args(["--torch-backend", "auto"])
                     .arg(&install_spec)
                     .status()
                     .context("installing the narration worker dependencies with uv")?;
                 if !status.success() {
                     bail!("uv pip install failed with {status}");
+                }
+                if needs_cuda_build {
+                    let status = std::process::Command::new(&uv)
+                        .env("CMAKE_ARGS", "-DGGML_CUDA=on")
+                        .env("FORCE_CMAKE", "1")
+                        .args(["pip", "install", "--python"])
+                        .arg(&python)
+                        .args([
+                            "--upgrade",
+                            "--force-reinstall",
+                            "--no-cache-dir",
+                            "llama-cpp-python>=0.3.2",
+                        ])
+                        .status()
+                        .context("building llama-cpp-python with CUDA support")?;
+                    if !status.success() {
+                        bail!("the CUDA build of llama-cpp-python failed with {status}");
+                    }
                 }
                 std::fs::write(&marker, &expected_marker)?;
                 return Ok(true);
@@ -306,6 +357,25 @@ impl AppRuntime {
             if !status.success() {
                 bail!("installing the narration worker failed with {status}");
             }
+            if needs_cuda_build {
+                let status = std::process::Command::new(&python)
+                    .env("CMAKE_ARGS", "-DGGML_CUDA=on")
+                    .env("FORCE_CMAKE", "1")
+                    .args([
+                        "-m",
+                        "pip",
+                        "install",
+                        "--upgrade",
+                        "--force-reinstall",
+                        "--no-cache-dir",
+                        "llama-cpp-python>=0.3.2",
+                    ])
+                    .status()
+                    .context("building llama-cpp-python with CUDA support")?;
+                if !status.success() {
+                    bail!("the CUDA build of llama-cpp-python failed with {status}");
+                }
+            }
             std::fs::write(&marker, &expected_marker)?;
             Ok(true)
         })
@@ -315,6 +385,28 @@ impl AppRuntime {
     fn cache_dir(&self) -> PathBuf {
         self.core.data_dir.join("cache/segments")
     }
+
+    fn worker_accelerator(&self) -> Option<String> {
+        let marker = self
+            .python
+            .parent()
+            .and_then(Path::parent)?
+            .join(".audiobookgen-install-ok");
+        std::fs::read_to_string(marker)
+            .ok()
+            .map(|content| parse_install_marker(content.trim()).2)
+    }
+
+    fn worker_extra_installed(&self, extra: &str) -> bool {
+        let marker = match self.python.parent().and_then(Path::parent) {
+            Some(parent) => parent.join(".audiobookgen-install-ok"),
+            None => return false,
+        };
+        std::fs::read_to_string(marker)
+            .ok()
+            .map(|content| parse_install_marker(content.trim()).1)
+            .is_some_and(|extras| extras.iter().any(|installed| installed == extra))
+    }
 }
 
 fn kokoro_installed(model_dir: &Path) -> bool {
@@ -323,36 +415,14 @@ fn kokoro_installed(model_dir: &Path) -> bool {
 }
 
 fn maya1_installed(model_dir: &Path, quant: &str) -> bool {
-    model_dir.join(format!("maya1.{quant}.gguf")).exists()
-        || model_dir.join("MOCK_MODEL").exists()
+    model_dir.join(format!("maya1.{quant}.gguf")).exists() || model_dir.join("MOCK_MODEL").exists()
 }
 
 fn voxtral_installed(model_dir: &Path) -> bool {
-    model_dir.join("config.json").exists() || model_dir.join("MOCK_MODEL").exists()
-}
-
-/// Cheap TCP reachability probe for the vLLM-Omni server so the Models page
-/// can show live status without booting the Python worker.
-fn server_reachable(url: &str) -> bool {
-    let trimmed = url
-        .trim_start_matches("http://")
-        .trim_start_matches("https://");
-    let authority = trimmed.split('/').next().unwrap_or_default();
-    let target = if authority.contains(':') {
-        authority.to_owned()
-    } else {
-        format!("{authority}:80")
-    };
-    target
-        .as_str()
-        .to_socket_addrs()
-        .ok()
-        .into_iter()
-        .flatten()
-        .any(|address| {
-            std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(500))
-                .is_ok()
-        })
+    (model_dir.join("consolidated.safetensors").exists()
+        && model_dir.join("tekken.json").exists()
+        && model_dir.join("voice_embedding").is_dir())
+        || model_dir.join("MOCK_MODEL").exists()
 }
 
 // Kokoro's dependency chain supports >=3.10,<3.14; keep this inside that range.
@@ -360,23 +430,54 @@ const WORKER_PYTHON_VERSION: &str = "3.12";
 
 /// Identity of a finished worker install: interpreter version plus a hash of the
 /// worker's pyproject, so dependency changes trigger a reinstall on upgrade.
-fn format_install_marker(stamp: &str, extras: &[String]) -> String {
-    format!("{stamp}|extras={}", extras.join(","))
+fn format_install_marker(stamp: &str, extras: &[String], accelerator: &str) -> String {
+    format!(
+        "{stamp}|extras={}|accelerator={accelerator}",
+        extras.join(",")
+    )
 }
 
-fn parse_install_marker(content: &str) -> (String, Vec<String>) {
+fn parse_install_marker(content: &str) -> (String, Vec<String>, String) {
     match content.split_once("|extras=") {
-        Some((stamp, extras)) => (
-            stamp.to_owned(),
-            extras
-                .split(',')
-                .filter(|extra| !extra.is_empty())
-                .map(str::to_owned)
-                .collect(),
-        ),
+        Some((stamp, tail)) => {
+            let (extras, accelerator) = tail
+                .split_once("|accelerator=")
+                .map_or((tail, "cpu"), |(extras, accelerator)| (extras, accelerator));
+            (
+                stamp.to_owned(),
+                extras
+                    .split(',')
+                    .filter(|extra| !extra.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+                accelerator.to_owned(),
+            )
+        }
         // Markers from before extras support carry the bare stamp.
-        None => (content.to_owned(), Vec::new()),
+        None => (content.to_owned(), Vec::new(), "cpu".into()),
     }
+}
+
+fn cuda_build_available() -> bool {
+    if voxtral::detect_nvidia_gpu().is_none() {
+        return false;
+    }
+    std::process::Command::new("nvcc")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn llama_cuda_available(python: &Path) -> bool {
+    python.exists()
+        && std::process::Command::new(python)
+            .args([
+                "-c",
+                "import llama_cpp; raise SystemExit(0 if llama_cpp.llama_supports_gpu_offload() else 1)",
+            ])
+            .status()
+            .is_ok_and(|status| status.success())
 }
 
 fn worker_install_stamp(worker_root: &Path) -> Result<String> {
@@ -385,6 +486,53 @@ fn worker_install_stamp(worker_root: &Path) -> Result<String> {
         .context("reading the worker pyproject for the install stamp")?;
     let digest = hex::encode(Sha256::digest(&pyproject));
     Ok(format!("{WORKER_PYTHON_VERSION}:{digest}"))
+}
+
+fn file_sha256(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut source = std::fs::File::open(path)
+        .with_context(|| format!("opening checksum input {}", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0_u8; 8 * 1024 * 1024];
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+fn voxtral_cache_discriminator(
+    model_dir: &Path,
+    voice: &str,
+    settings: &AppSettings,
+) -> Result<String> {
+    let model_checksum = file_sha256(&model_dir.join("consolidated.safetensors"))?;
+    let voice_checksum = file_sha256(
+        &model_dir
+            .join("voice_embedding")
+            .join(format!("{voice}.pt")),
+    )?;
+    let flow_steps = if settings.voxtral_profile == "quality" {
+        8
+    } else {
+        3
+    };
+    Ok(format!(
+        "model={model_checksum}|voice={voice_checksum}|engine=voxtral-int4-93d3e21|quant=hqq-int4-g64-tile-packed-to-4d|profile={}|flow_steps={flow_steps}|cfg=1.2|seed={}|postprocess=lowpass-resample-peak-v1|sample_rate=48000",
+        settings.voxtral_profile, settings.voxtral_seed
+    ))
+}
+
+fn extend_cache_key(base: &str, discriminator: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(base.as_bytes());
+    digest.update([0]);
+    digest.update(discriminator.as_bytes());
+    hex::encode(digest.finalize())
 }
 
 fn managed_python(data_dir: &Path) -> PathBuf {
@@ -396,10 +544,34 @@ fn managed_python(data_dir: &Path) -> PathBuf {
 }
 
 const KOKORO_VOICES: &[&str] = &[
-    "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore", "af_nicole",
-    "af_nova", "af_river", "af_sarah", "af_sky", "am_adam", "am_echo", "am_eric", "am_fenrir",
-    "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa", "bf_alice", "bf_emma",
-    "bf_isabella", "bf_lily", "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+    "af_alloy",
+    "af_aoede",
+    "af_bella",
+    "af_heart",
+    "af_jessica",
+    "af_kore",
+    "af_nicole",
+    "af_nova",
+    "af_river",
+    "af_sarah",
+    "af_sky",
+    "am_adam",
+    "am_echo",
+    "am_eric",
+    "am_fenrir",
+    "am_liam",
+    "am_michael",
+    "am_onyx",
+    "am_puck",
+    "am_santa",
+    "bf_alice",
+    "bf_emma",
+    "bf_isabella",
+    "bf_lily",
+    "bm_daniel",
+    "bm_fable",
+    "bm_george",
+    "bm_lewis",
 ];
 
 fn validate_voice(engine: &str, voice: &str) -> Result<()> {
@@ -437,6 +609,26 @@ fn engine_model_revision(engine: &str) -> &'static str {
 
 fn command_error(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+fn emit_model_progress(
+    app: &AppHandle,
+    engine: &str,
+    phase: &str,
+    message: impl Into<String>,
+    current: Option<u64>,
+    total: Option<u64>,
+) {
+    let _ = app.emit(
+        "model-progress",
+        ModelProgress {
+            engine: engine.into(),
+            phase: phase.into(),
+            message: message.into(),
+            current,
+            total,
+        },
+    );
 }
 fn parse_uuid(value: &str, label: &str) -> Result<Uuid> {
     Uuid::parse_str(value).with_context(|| format!("invalid {label}"))
@@ -610,6 +802,9 @@ pub async fn create_narration_profile(
     if !(0.5..=2.0).contains(&input.speed) {
         return Err("speed must be between 0.5 and 2.0".into());
     }
+    if input.engine == "voxtral" && (input.speed - 1.0).abs() > f32::EPSILON {
+        return Err("Voxtral currently supports narration speed 1.0 only".into());
+    }
     let profile = NarrationProfile {
         id: Uuid::new_v4(),
         book_id,
@@ -719,6 +914,9 @@ pub async fn update_app_settings(
     if !(0.1..=1.5).contains(&settings.maya1_temperature) {
         return Err("maya1 temperature must be between 0.1 and 1.5".into());
     }
+    if !["balanced", "quality", "compatibility"].contains(&settings.voxtral_profile.as_str()) {
+        return Err("unsupported Voxtral quality profile".into());
+    }
     if let Some(root) = &settings.models_root {
         if !root.is_absolute() {
             return Err("the models folder must be an absolute path".into());
@@ -745,24 +943,48 @@ pub async fn list_engine_status(
                     installed: maya1_installed(&path, &settings.maya1_quant),
                     path,
                     quant: Some(settings.maya1_quant.clone()),
-                    server_reachable: None,
-                    server_url: None,
+                    runtime_installed: None,
+                    voices: Vec::new(),
+                    accelerator_message: Some(
+                        match runtime.worker_accelerator().as_deref() {
+                            Some("cuda") => "CUDA acceleration is installed for Maya1.".into(),
+                            _ if cuda_build_available() => "An NVIDIA GPU and CUDA toolkit were detected; the next Maya1 install will build CUDA acceleration automatically.".into(),
+                            _ => "CUDA was not detected; Maya1 will use its CPU fallback.".into(),
+                        },
+                    ),
+                    hardware_supported: None,
                 },
                 "voxtral" => EngineModelStatus {
                     engine: engine.into(),
                     installed: voxtral_installed(&path),
+                    voices: std::fs::read_dir(path.join("voice_embedding"))
+                        .ok()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|entry| entry.ok())
+                        .filter_map(|entry| {
+                            (entry.path().extension().and_then(|value| value.to_str()) == Some("pt"))
+                                .then(|| entry.path().file_stem()?.to_str().map(str::to_owned))
+                                .flatten()
+                        })
+                        .collect(),
                     path,
                     quant: None,
-                    server_reachable: Some(server_reachable(&settings.voxtral_server_url)),
-                    server_url: Some(settings.voxtral_server_url.clone()),
+                    runtime_installed: Some(runtime.worker_extra_installed("voxtral")),
+                    accelerator_message: Some(voxtral::cuda_status_message()),
+                    hardware_supported: Some(
+                        voxtral::detect_nvidia_gpu().is_some_and(|gpu| gpu.can_run_voxtral()),
+                    ),
                 },
                 _ => EngineModelStatus {
                     engine: engine.into(),
                     installed: kokoro_installed(&path),
                     path,
                     quant: None,
-                    server_reachable: None,
-                    server_url: None,
+                    runtime_installed: None,
+                    voices: Vec::new(),
+                    accelerator_message: None,
+                    hardware_supported: None,
                 },
             }
         })
@@ -778,39 +1000,74 @@ pub async fn download_engine_model(
     if !ENGINES.contains(&engine.as_str()) {
         return Err("unknown narration engine".into());
     }
-    let stage = |message: &str| {
-        let _ = app.emit("model-progress", message);
+    if engine == "voxtral" && !runtime.settings().voxtral_license_accepted {
+        return Err(
+            "Accept the Voxtral model's CC BY-NC 4.0 license in Models before downloading.".into(),
+        );
+    }
+    let stage = |phase: &str, message: &str| {
+        emit_model_progress(&app, &engine, phase, message, None, None);
     };
     stage(
+        "preparing",
         "Preparing the narration engine. The first run installs Python packages and can take several minutes.",
     );
     let worker = runtime.worker_for_engine(&engine).await.map_err(|error| {
-        stage("The narration engine could not be prepared.");
+        stage("failed", "The narration engine could not be prepared.");
         command_error(error)
     })?;
-    stage(match engine.as_str() {
-        "maya1" => "Downloading Maya1 weights (about 3.4 GB for Q8_0) and the SNAC decoder.",
-        "voxtral" => "Downloading Voxtral 4B TTS weights (about 9 GB).",
-        _ => "Downloading the Kokoro model (about 330 MB).",
-    });
+    stage(
+        "downloading",
+        match engine.as_str() {
+            "maya1" => "Downloading Maya1 weights (about 3.4 GB for Q8_0) and the SNAC decoder.",
+            "voxtral" => "Downloading Voxtral 4B TTS weights (about 9 GB).",
+            _ => "Downloading the Kokoro model (about 330 MB).",
+        },
+    );
+    let progress_app = app.clone();
+    let progress_engine = engine.clone();
     let response = worker
-        .request(WorkerRequest::DownloadModel {
-            id: Uuid::new_v4().to_string(),
-            engine: engine.clone(),
-            model_dir: runtime.engine_model_dir(&engine),
-            options: runtime.engine_options(&engine),
-        })
+        .request_with_progress(
+            WorkerRequest::DownloadModel {
+                id: Uuid::new_v4().to_string(),
+                engine: engine.clone(),
+                model_dir: runtime.engine_model_dir(&engine),
+                options: runtime.engine_options(&engine),
+            },
+            move |response| {
+                let state = response.state.as_deref().unwrap_or("downloading");
+                let message = match (response.current, response.total) {
+                    (Some(current), Some(total)) if total > 0 => format!(
+                        "Downloading model files: {:.1}%",
+                        current as f64 / total as f64 * 100.0
+                    ),
+                    _ => format!("Model setup: {state}"),
+                };
+                emit_model_progress(
+                    &progress_app,
+                    &progress_engine,
+                    state,
+                    message,
+                    response.current,
+                    response.total,
+                );
+            },
+        )
         .await
         .map_err(|error| {
-            stage("The model download failed.");
+            stage("failed", "The model download failed.");
             command_error(error)
         })?;
-    stage("The model is ready.");
+    stage(
+        "complete",
+        "The model is ready. Voxtral will start automatically when it is used.",
+    );
     Ok(response.payload)
 }
 
 #[tauri::command]
 pub async fn preview_voice(
+    app: AppHandle,
     runtime: tauri::State<'_, AppRuntime>,
     text: String,
     engine: String,
@@ -828,17 +1085,34 @@ pub async fn preview_voice(
         .worker_for_engine(&engine)
         .await
         .map_err(command_error)?;
+    let progress_app = app.clone();
+    let progress_engine = engine.clone();
     worker
-        .request(WorkerRequest::Generate {
-            id: Uuid::new_v4().to_string(),
-            engine: engine.clone(),
-            text,
-            voice,
-            speed,
-            output_path: output.clone(),
-            model_dir: runtime.engine_model_dir(&engine),
-            options: runtime.engine_options(&engine),
-        })
+        .request_with_progress(
+            WorkerRequest::Generate {
+                id: Uuid::new_v4().to_string(),
+                engine: engine.clone(),
+                text,
+                voice,
+                speed,
+                output_path: output.clone(),
+                model_dir: runtime.engine_model_dir(&engine),
+                options: runtime.engine_options(&engine),
+            },
+            move |response| {
+                emit_model_progress(
+                    &progress_app,
+                    &progress_engine,
+                    response.state.as_deref().unwrap_or("generating"),
+                    response
+                        .state
+                        .as_deref()
+                        .unwrap_or("Generating voice preview"),
+                    response.current,
+                    response.total,
+                );
+            },
+        )
         .await
         .map_err(command_error)?;
     Ok(output.to_string_lossy().into_owned())
@@ -878,6 +1152,17 @@ pub async fn queue_generation(
         runtime.jobs.lock().await.remove(&task_job_id);
     });
     Ok(job_id)
+}
+
+#[tauri::command]
+pub async fn stop_voxtral_runtime(
+    runtime: tauri::State<'_, AppRuntime>,
+) -> std::result::Result<(), String> {
+    let worker = runtime.worker.lock().await.take();
+    if let Some(worker) = worker {
+        worker.shutdown().await.map_err(command_error)?;
+    }
+    Ok(())
 }
 
 async fn run_generation(
@@ -943,6 +1228,19 @@ async fn run_generation(
         },
     )?;
     let worker = runtime.worker_for_engine(&profile.engine).await?;
+    let voxtral_discriminator = if profile.engine == "voxtral" {
+        let model_dir = runtime.engine_model_dir("voxtral");
+        let voice = profile.voice.clone();
+        let settings = runtime.settings();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                voxtral_cache_discriminator(&model_dir, &voice, &settings)
+            })
+            .await??,
+        )
+    } else {
+        None
+    };
     let mut completed = 0usize;
     for mut fragment in fragments {
         if cancelled.load(Ordering::Relaxed) {
@@ -962,6 +1260,9 @@ async fn run_generation(
         }
         fragment.spoken_text = normalize_for_speech(&fragment.source_text, &rules);
         fragment.cache_key = segment_cache_key(&fragment, &profile);
+        if let Some(discriminator) = &voxtral_discriminator {
+            fragment.cache_key = extend_cache_key(&fragment.cache_key, discriminator);
+        }
         if let Some(existing) = runtime.core.db.generated_segment(fragment.id, profile.id)? {
             if existing.cache_key == fragment.cache_key && existing.audio_path.exists() {
                 completed += 1;
@@ -1002,20 +1303,46 @@ async fn run_generation(
         ));
         let mut word_timings = Vec::new();
         let (duration_ms, sample_rate) = if fragment.kind == FragmentKind::SceneBreak {
-            write_silence(&temporary, 40)?;
-            (40, 24_000)
+            let sample_rate = if profile.engine == "voxtral" {
+                48_000
+            } else {
+                24_000
+            };
+            write_silence(&temporary, 40, sample_rate)?;
+            (40, sample_rate)
         } else {
+            let progress_app = app.clone();
+            let progress_job_id = job_id.to_owned();
+            let progress_book_id = request.book_id.to_string();
+            let progress_fragment_id = fragment.id.to_string();
             let response = worker
-                .request(WorkerRequest::Generate {
-                    id: Uuid::new_v4().to_string(),
-                    engine: profile.engine.clone(),
-                    text: fragment.spoken_text.clone(),
-                    voice: profile.voice.clone(),
-                    speed: profile.speed,
-                    output_path: temporary.clone(),
-                    model_dir: runtime.engine_model_dir(&profile.engine),
-                    options: runtime.engine_options(&profile.engine),
-                })
+                .request_with_progress(
+                    WorkerRequest::Generate {
+                        id: Uuid::new_v4().to_string(),
+                        engine: profile.engine.clone(),
+                        text: fragment.spoken_text.clone(),
+                        voice: profile.voice.clone(),
+                        speed: profile.speed,
+                        output_path: temporary.clone(),
+                        model_dir: runtime.engine_model_dir(&profile.engine),
+                        options: runtime.engine_options(&profile.engine),
+                    },
+                    move |response| {
+                        let state = response.state.as_deref().unwrap_or("generating");
+                        let _ = progress_app.emit(
+                            "generation-progress",
+                            GenerationProgress {
+                                job_id: progress_job_id.clone(),
+                                book_id: progress_book_id.clone(),
+                                completed,
+                                total,
+                                fragment_id: Some(progress_fragment_id.clone()),
+                                state: "generating",
+                                message: Some(format!("Voxtral worker: {state}")),
+                            },
+                        );
+                    },
+                )
                 .await?;
             word_timings = response.word_timings.clone();
             (
@@ -1070,15 +1397,15 @@ async fn run_generation(
     Ok(())
 }
 
-fn write_silence(path: &Path, duration_ms: u64) -> Result<()> {
+fn write_silence(path: &Path, duration_ms: u64, sample_rate: u32) -> Result<()> {
     let spec = hound::WavSpec {
         channels: 1,
-        sample_rate: 24_000,
+        sample_rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(path, spec)?;
-    for _ in 0..(duration_ms * 24) {
+    for _ in 0..duration_ms * u64::from(sample_rate) / 1_000 {
         writer.write_sample(0i16)?;
     }
     writer.finalize()?;

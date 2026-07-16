@@ -12,17 +12,17 @@ The application has three layers:
 
 1. A statically exported Next.js interface rendered by Tauri's system webview.
 2. A Rust core responsible for all durable state and filesystem changes.
-3. One long-lived Python worker responsible only for TTS inference.
+3. One long-lived Python narration worker responsible only for in-process TTS inference.
 
-There is no local HTTP server in the app itself. Tauri commands carry user actions into Rust, and Tauri events report generation progress to the interface. Rust communicates with Python through newline-delimited JSON on standard input and output. Audio bytes never travel through JSON; the worker writes a temporary WAV and returns its path, metadata, and optional per-word timings.
+Tauri commands carry user actions into Rust, and Tauri events report generation and model-install progress to the interface. Rust communicates with the narration worker through newline-delimited JSON on standard input and output. Audio bytes never travel through JSON; the worker writes a temporary WAV and returns its path, sample rate, duration, and optional timing estimates. Voxtral uses this same supervised sidecar and never opens a server port.
 
 ## Narration engines
 
 The worker hosts an engine registry; each narration profile picks one engine:
 
 - **Kokoro 82M** (default): in-process, 28 English voices, true per-word timestamps from misaki G2P. About 330 MB.
-- **Maya1 3B**: voice-design TTS (the profile "voice" is a natural-language description, emotion tags inline). Runs quantized GGUF weights through `llama-cpp-python` plus the SNAC 24 kHz decoder. Quantization is configurable (Q8_0 default, near-lossless at ~3.4 GB — chosen to fit a 12 GB GPU). Its heavy dependencies live behind the `[maya1]` extra and install on first download; installing an extra restarts the worker.
-- **Voxtral 4B TTS** (`mistralai/Voxtral-4B-TTS-2603`): preset voices, only supported by vLLM-Omni, so it runs as a separate user-started server. The engine downloads weights and synthesizes through the OpenAI-compatible `/v1/audio/speech` endpoint at a configurable URL. The Models page prints the serve command.
+- **Maya1 3B**: voice-design TTS (the profile "voice" is a natural-language description, emotion tags inline). Runs quantized GGUF weights through `llama-cpp-python` plus the SNAC 24 kHz decoder. Quantization is configurable (Q8_0 default, near-lossless at ~3.4 GB — chosen to fit a 12 GB GPU). Its heavy dependencies live behind the `[maya1]` extra and install on first download; installing an extra restarts the worker. When `nvidia-smi` and `nvcc` are available, the private worker environment rebuilds llama.cpp with `GGML_CUDA=on` and records that accelerator in its atomic completion marker. PyTorch selection uses uv's automatic accelerator backend.
+- **Voxtral 4B TTS** (`mistralai/Voxtral-4B-TTS-2603`): direct PyTorch inference adapted from `TheMHD1/voxtral-int4`. The 26-layer language backbone is quantized layer-by-layer with HQQ INT4, group size 64, and torchao tile packing. The quality-sensitive acoustic transformer and codec remain BF16. Production profiles keep CFG at 1.2; output is post-processed and serialized at 48 kHz. The supported path is Linux, NVIDIA compute capability 8.0+, and a measured 12 GB profile.
 
 Engines without native timestamps get length-proportional word timings so read-along word highlighting works everywhere. Segment cache keys hash the engine name for non-Kokoro engines only, keeping pre-existing Kokoro caches valid.
 
@@ -80,7 +80,9 @@ A crash can lose only the sentence currently being written. Completed cache file
 
 ## Worker lifecycle
 
-The worker starts on the first model or generation operation and remains loaded. Unless `AUDIOBOOKGEN_PYTHON` is supplied, the desktop app creates a private virtual environment under application data and installs the worker package there. The model snapshot is downloaded into a separate model directory. At inference time the worker passes explicit local config, weight, and voice paths to Kokoro; it does not depend on a network lookup after installation.
+The narration worker starts on the first model or generation operation and remains loaded. Unless `AUDIOBOOKGEN_PYTHON` is supplied, the desktop app creates a private virtual environment under application data and installs the worker package there. The model snapshot is downloaded into a separate model directory. At inference time the worker passes explicit local config, weight, and voice paths to Kokoro; it does not depend on a network lookup after installation.
+
+Voxtral dependencies are an optional extra in the same private worker environment. The model loads lazily on first preview or generation, and stopping the supervised worker releases its GPU memory. CPU-first safetensors loading and per-layer CUDA quantization avoid placing the complete BF16 model on a 12 GB GPU. Installer, download, layer-quantization, and synthesis states are emitted as structured progress events.
 
 Requests are serialized through the worker supervisor. This keeps the protocol simple and prevents concurrent calls from interleaving model output or stdout responses.
 
@@ -99,11 +101,13 @@ app-data/
 └── exports/
 ```
 
+With a configurable models root, Maya1 and Voxtral weights plus Hugging Face caches live on that selected volume rather than the system drive.
+
 The reader uses EPUB locations plus source-text hashes. Reading and listening positions are stored separately but can be linked in the interface.
 
 ## Export
 
-Internal segments stay mono 24 kHz PCM WAV so individual sentences can be regenerated without generational codec loss.
+Internal segments stay mono PCM WAV at the engine's declared rate (24 kHz for Kokoro/Maya1 and 48 kHz for post-processed Voxtral) so individual sentences can be regenerated without generational codec loss.
 
 - M4A export renders each chapter and encodes AAC.
 - M4B export renders the book, writes FFmetadata chapter ranges, and encodes one AAC container.

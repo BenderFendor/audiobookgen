@@ -53,7 +53,9 @@ def parse_generate(payload: dict[str, Any]) -> GenerateRequest:
     engine = parse_engine(payload)
     text = require_string(payload, "text", maximum=12_000)
     voice = require_string(payload, "voice", maximum=500)
-    output_path = Path(require_string(payload, "output_path", maximum=4096)).expanduser()
+    output_path = Path(
+        require_string(payload, "output_path", maximum=4096)
+    ).expanduser()
     model_dir = Path(require_string(payload, "model_dir", maximum=4096)).expanduser()
     try:
         speed = float(payload.get("speed", 1.0))
@@ -63,6 +65,15 @@ def parse_generate(payload: dict[str, Any]) -> GenerateRequest:
         raise ProtocolError("speed must be between 0.5 and 2.0")
     if not output_path.is_absolute() or not model_dir.is_absolute():
         raise ProtocolError("worker paths must be absolute")
+    if ".." in output_path.parts or ".." in model_dir.parts:
+        raise ProtocolError("worker paths must not contain parent traversal")
     return GenerateRequest(
-        request_id, engine, text, voice, speed, output_path, model_dir, parse_options(payload)
+        request_id,
+        engine,
+        text,
+        voice,
+        speed,
+        output_path,
+        model_dir,
+        parse_options(payload),
     )

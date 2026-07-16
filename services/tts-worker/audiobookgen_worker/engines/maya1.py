@@ -18,6 +18,7 @@ from .base import (
     GenerateResult,
     Progress,
     configure_hf_cache,
+    download_with_progress,
     estimated_word_timings,
     mock_result,
     trim_silence,
@@ -69,11 +70,25 @@ class Maya1Engine:
             "mock": self.mock,
         }
 
-    def installed(self, model_dir: Path, options: dict[str, object]) -> dict[str, object]:
+    def installed(
+        self, model_dir: Path, options: dict[str, object]
+    ) -> dict[str, object]:
         quant = self._quant(options)
         weights = model_dir / QUANTS[quant]
         ready = weights.is_file() or model_dir.joinpath("MOCK_MODEL").is_file()
-        return {"installed": ready, "path": str(model_dir), "quant": quant}
+        gpu_offload: bool | None = None
+        try:
+            import llama_cpp
+
+            gpu_offload = bool(llama_cpp.llama_supports_gpu_offload())
+        except Exception:
+            gpu_offload = None
+        return {
+            "installed": ready,
+            "path": str(model_dir),
+            "quant": quant,
+            "gpu_offload": gpu_offload,
+        }
 
     def ensure_model(
         self, model_dir: Path, options: dict[str, object], progress: Progress
@@ -84,21 +99,19 @@ class Maya1Engine:
             return {"installed": True, "path": str(model_dir), "mock": True}
         self._require_dependencies()
         configure_hf_cache(model_dir)
-        from huggingface_hub import hf_hub_download
-
         quant = self._quant(options)
         progress("downloading")
-        hf_hub_download(
-            repo_id=GGUF_REPO,
-            filename=QUANTS[quant],
-            local_dir=model_dir,
-            local_dir_use_symlinks=False,
-        )
+        download_with_progress(GGUF_REPO, model_dir, progress, filename=QUANTS[quant])
         progress("downloading-decoder")
         from snac import SNAC
 
         SNAC.from_pretrained(SNAC_REPO)
-        return {"installed": True, "path": str(model_dir), "quant": quant, "mock": False}
+        return {
+            "installed": True,
+            "path": str(model_dir),
+            "quant": quant,
+            "mock": False,
+        }
 
     def generate(
         self,
@@ -119,7 +132,9 @@ class Maya1Engine:
         import numpy as np
         import soundfile as sf
 
-        description = voice.strip() or "Realistic adult narrator, neutral accent, warm and clear"
+        description = (
+            voice.strip() or "Realistic adult narrator, neutral accent, warm and clear"
+        )
         progress("loading")
         llm = self._get_llm(model_dir, options)
         prompt_tokens = self._prompt_tokens(llm, description, text)
@@ -143,7 +158,9 @@ class Maya1Engine:
         codes = [token for token in generated if token >= CODE_BASE]
         frames = len(codes) // 7
         if frames == 0:
-            raise RuntimeError("maya1 produced no audio codes; try a shorter sentence or a simpler voice description")
+            raise RuntimeError(
+                "maya1 produced no audio codes; try a shorter sentence or a simpler voice description"
+            )
         progress("decoding")
         audio = self._decode_snac(codes[: frames * 7], options)
         audio, _ = trim_silence(np.asarray(audio, dtype=np.float32))
@@ -156,7 +173,9 @@ class Maya1Engine:
 
     def _prompt_tokens(self, llm, description: str, text: str) -> list[int]:
         formatted = f'<description="{description}"> {text}'
-        text_tokens = llm.tokenize(formatted.encode("utf-8"), add_bos=False, special=False)
+        text_tokens = llm.tokenize(
+            formatted.encode("utf-8"), add_bos=False, special=False
+        )
         return [SOH_ID, BOS_ID, *text_tokens, TEXT_EOT_ID, EOH_ID, SOA_ID, SOS_ID]
 
     def _decode_snac(self, codes: list[int], options: dict[str, object]):
@@ -168,13 +187,17 @@ class Maya1Engine:
         for index in range(0, len(codes), 7):
             slots = codes[index : index + 7]
             level1.append((slots[0] - CODE_BASE) % CODE_SPAN)
-            level2.extend([(slots[1] - CODE_BASE) % CODE_SPAN, (slots[4] - CODE_BASE) % CODE_SPAN])
-            level3.extend([
-                (slots[2] - CODE_BASE) % CODE_SPAN,
-                (slots[3] - CODE_BASE) % CODE_SPAN,
-                (slots[5] - CODE_BASE) % CODE_SPAN,
-                (slots[6] - CODE_BASE) % CODE_SPAN,
-            ])
+            level2.extend(
+                [(slots[1] - CODE_BASE) % CODE_SPAN, (slots[4] - CODE_BASE) % CODE_SPAN]
+            )
+            level3.extend(
+                [
+                    (slots[2] - CODE_BASE) % CODE_SPAN,
+                    (slots[3] - CODE_BASE) % CODE_SPAN,
+                    (slots[5] - CODE_BASE) % CODE_SPAN,
+                    (slots[6] - CODE_BASE) % CODE_SPAN,
+                ]
+            )
         snac, device = self._get_snac(options)
         with torch.inference_mode():
             tensors = [
@@ -187,7 +210,9 @@ class Maya1Engine:
     def _get_llm(self, model_dir: Path, options: dict[str, object]):
         weights = model_dir / QUANTS[self._quant(options)]
         if not weights.is_file():
-            raise RuntimeError("maya1 weights are missing; download the model from the Models page")
+            raise RuntimeError(
+                "maya1 weights are missing; download the model from the Models page"
+            )
         if self._llm is None or self._llm_path != weights:
             from llama_cpp import Llama
 
@@ -206,7 +231,11 @@ class Maya1Engine:
         import torch
 
         wanted = str(options.get("device", "auto"))
-        device = "cpu" if wanted == "cpu" else ("cuda" if torch.cuda.is_available() else "cpu")
+        device = (
+            "cpu"
+            if wanted == "cpu"
+            else ("cuda" if torch.cuda.is_available() else "cpu")
+        )
         if self._snac is None or self._snac_device != device:
             from snac import SNAC
 

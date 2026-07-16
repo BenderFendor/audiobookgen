@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   AppSettings, BookDetail, BookSummary, CreateNarrationProfile, EngineModelStatus, Fragment,
   GeneratedSegment, GenerationProgress, ImportReview, ImportSelection, NarrationProfile,
-  ProgressState, PronunciationRule, QueueGeneration, TtsEngine,
+  ModelProgress, ProgressState, PronunciationRule, QueueGeneration, TtsEngine,
 } from "./types";
 
 export function isTauri(): boolean {
@@ -35,6 +35,7 @@ export const api = {
   loadProgress: (bookId: string) => invoke<ProgressState | null>("load_progress", { bookId }),
   listEngineStatus: () => invoke<EngineModelStatus[]>("list_engine_status"),
   downloadEngineModel: (engine: TtsEngine) => invoke<unknown>("download_engine_model", { engine }),
+  stopVoxtralRuntime: () => invoke<void>("stop_voxtral_runtime"),
   getAppSettings: () => invoke<AppSettings>("get_app_settings"),
   updateAppSettings: (settings: AppSettings) => invoke<AppSettings>("update_app_settings", { settings }),
   previewVoice: (text: string, engine: TtsEngine, voice: string, speed: number) => invoke<string>("preview_voice", { text, engine, voice, speed }),
@@ -52,6 +53,6 @@ export async function onGenerationProgress(callback: (progress: GenerationProgre
   return listen<GenerationProgress>("generation-progress", (event) => callback(event.payload));
 }
 
-export async function onModelProgress(callback: (stage: string) => void): Promise<() => void> {
-  return listen<string>("model-progress", (event) => callback(event.payload));
+export async function onModelProgress(callback: (progress: ModelProgress) => void): Promise<() => void> {
+  return listen<ModelProgress>("model-progress", (event) => callback(event.payload));
 }

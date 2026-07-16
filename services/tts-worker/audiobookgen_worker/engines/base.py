@@ -16,7 +16,8 @@ from typing import Callable, Protocol
 
 SAMPLE_RATE = 24_000
 
-Progress = Callable[[str], None]
+# progress(state) or progress(state, current_bytes, total_bytes)
+Progress = Callable[..., None]
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,9 @@ class Engine(Protocol):
 
     def capabilities(self) -> dict[str, object]: ...
 
-    def installed(self, model_dir: Path, options: dict[str, object]) -> dict[str, object]: ...
+    def installed(
+        self, model_dir: Path, options: dict[str, object]
+    ) -> dict[str, object]: ...
 
     def ensure_model(
         self, model_dir: Path, options: dict[str, object], progress: Progress
@@ -85,7 +88,9 @@ def estimated_word_timings(text: str, duration_ms: int) -> list[WordTiming]:
     for word, weight in zip(words, weights):
         start = cursor
         cursor += duration_ms * weight / total
-        timings.append(WordTiming(word=word, start_ms=round(start), end_ms=round(cursor)))
+        timings.append(
+            WordTiming(word=word, start_ms=round(start), end_ms=round(cursor))
+        )
     return timings
 
 
@@ -100,7 +105,9 @@ def write_mock_wave(text: str, speed: float, output_path: Path) -> int:
         wav.setframerate(SAMPLE_RATE)
         for index in range(frames):
             envelope = min(1.0, index / 240) * min(1.0, (frames - index) / 240)
-            value = int(2_400 * envelope * math.sin(2 * math.pi * 220 * index / SAMPLE_RATE))
+            value = int(
+                2_400 * envelope * math.sin(2 * math.pi * 220 * index / SAMPLE_RATE)
+            )
             wav.writeframesraw(struct.pack("<h", value))
     return round(frames / SAMPLE_RATE * 1000)
 
@@ -111,6 +118,71 @@ def mock_result(text: str, speed: float, output_path: Path) -> GenerateResult:
         duration_ms=duration_ms,
         word_timings=estimated_word_timings(text, duration_ms),
     )
+
+
+def directory_size(path: Path) -> int:
+    total = 0
+    for entry in path.rglob("*"):
+        try:
+            if entry.is_file():
+                total += entry.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def download_with_progress(
+    repo_id: str,
+    model_dir: Path,
+    progress: Progress,
+    filename: str | None = None,
+    revision: str | None = None,
+) -> None:
+    """Hugging Face download with byte-level progress.
+
+    Total size comes from the repo metadata; downloaded bytes are measured by
+    polling the target directory (partial files included), which works for
+    both single files and full snapshots without hooking tqdm internals.
+    """
+    import threading
+
+    from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+
+    total = 0
+    try:
+        info = HfApi().model_info(repo_id, revision=revision, files_metadata=True)
+        for sibling in info.siblings or []:
+            if sibling.size and (filename is None or sibling.rfilename == filename):
+                total += sibling.size
+    except Exception:
+        total = 0
+
+    already = directory_size(model_dir) if model_dir.exists() else 0
+    done = threading.Event()
+
+    def poll() -> None:
+        while not done.wait(2.0):
+            if total:
+                current = max(0, directory_size(model_dir) - already)
+                progress("downloading", min(current, total), total)
+
+    watcher = threading.Thread(target=poll, daemon=True)
+    watcher.start()
+    try:
+        if filename is None:
+            snapshot_download(repo_id=repo_id, revision=revision, local_dir=model_dir)
+        else:
+            hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                local_dir=model_dir,
+            )
+    finally:
+        done.set()
+        watcher.join(timeout=1.0)
+    if total:
+        progress("downloading", total, total)
 
 
 def configure_hf_cache(model_dir: Path) -> None:

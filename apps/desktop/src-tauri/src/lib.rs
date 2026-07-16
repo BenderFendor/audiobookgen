@@ -1,5 +1,6 @@
 mod commands;
 mod platform;
+mod voxtral;
 
 use commands::AppRuntime;
 use tauri::{
@@ -60,6 +61,7 @@ pub fn run() {
             commands::load_progress,
             commands::list_engine_status,
             commands::download_engine_model,
+            commands::stop_voxtral_runtime,
             commands::get_app_settings,
             commands::update_app_settings,
             commands::get_generated_segment,

@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { api, wavObjectUrl } from "@/lib/tauri";
 import { ENGINE_LABELS, KOKORO_VOICES, VOXTRAL_PRESET_VOICES, kokoroVoiceLabel } from "@/lib/voices";
-import type { AppSettings, EngineModelStatus, TtsEngine } from "@/lib/types";
+import type { AppSettings, EngineModelStatus, ModelProgress, TtsEngine } from "@/lib/types";
 
 const PREVIEW_TEXT = "The quick brown fox jumps over the lazy dog, and the audiobook begins.";
 
@@ -16,20 +16,27 @@ const MAYA1_QUANTS = [
 interface Props {
   engines: EngineModelStatus[];
   settings: AppSettings;
-  modelStage: string | null;
+  modelProgress: ModelProgress | null;
   onSettingsChange: (settings: AppSettings) => Promise<void>;
   onDownload: (engine: TtsEngine) => Promise<void>;
+  onStopVoxtral: () => Promise<void>;
   onError: (message: string) => void;
 }
 
-export function ModelsView({ engines, settings, modelStage, onSettingsChange, onDownload, onError }: Props) {
+function formatBytes(bytes: number): string {
+  if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+}
+
+export function ModelsView({ engines, settings, modelProgress, onSettingsChange, onDownload, onStopVoxtral, onError }: Props) {
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [busyEngine, setBusyEngine] = useState<TtsEngine | null>(null);
   const [previewBusy, setPreviewBusy] = useState<TtsEngine | null>(null);
   const [previewVoice, setPreviewVoice] = useState<Record<TtsEngine, string>>({
     kokoro: "af_heart",
     maya1: "Adult narrator, neutral accent, warm and clear",
-    voxtral: settings.voxtral_default_voice || "narrator_female",
+    voxtral: settings.voxtral_default_voice || "neutral_female",
   });
   const [savingSettings, setSavingSettings] = useState(false);
   const status = useMemo(() => new Map(engines.map((engine) => [engine.engine, engine])), [engines]);
@@ -42,7 +49,10 @@ export function ModelsView({ engines, settings, modelStage, onSettingsChange, on
 
   const download = async (engine: TtsEngine) => {
     setBusyEngine(engine);
-    try { await onDownload(engine); } catch (error) { onError(String(error)); } finally { setBusyEngine(null); }
+    try {
+      if (engine === "voxtral") await onSettingsChange(draft);
+      await onDownload(engine);
+    } catch (error) { onError(String(error)); } finally { setBusyEngine(null); }
   };
 
   const playPreview = async (engine: TtsEngine) => {
@@ -56,14 +66,13 @@ export function ModelsView({ engines, settings, modelStage, onSettingsChange, on
     } catch (error) { onError(String(error)); } finally { setPreviewBusy(null); }
   };
 
-  const serveCommand = useMemo(() => {
-    const modelPath = voxtral?.path ?? "<models folder>/voxtral-4b-tts";
-    return [
-      "uv venv ~/.venvs/vllm-omni --python 3.12",
-      'uv pip install --python ~/.venvs/vllm-omni/bin/python "vllm>=0.18.0" "vllm-omni>=0.18.0" "mistral_common>=1.10.0"',
-      `~/.venvs/vllm-omni/bin/vllm serve "${modelPath}" --served-model-name mistralai/Voxtral-4B-TTS-2603 --port 8570 --gpu-memory-utilization 0.90 --max-model-len 4096`,
-    ].join("\n");
-  }, [voxtral?.path]);
+  const stopVoxtral = async () => {
+    try { await onStopVoxtral(); } catch (error) { onError(String(error)); }
+  };
+
+  const progressPercent = modelProgress?.current != null && modelProgress.total
+    ? Math.min(100, (modelProgress.current / modelProgress.total) * 100)
+    : null;
 
   return (
     <main className="models-page">
@@ -86,7 +95,15 @@ export function ModelsView({ engines, settings, modelStage, onSettingsChange, on
         </label>
         <small>Weights and Hugging Face caches land here. Already downloaded models are not moved when this changes.</small>
         <button className="secondary-button" disabled={savingSettings} onClick={() => void saveSettings()}>Save storage and engine settings</button>
-        {modelStage && <p className="model-stage">{modelStage}</p>}
+        {modelProgress && (
+          <div className="model-progress" aria-live="polite">
+            <div><strong>{ENGINE_LABELS[modelProgress.engine]}</strong><span>{modelProgress.message}</span></div>
+            <progress value={progressPercent ?? undefined} max={100} />
+            {progressPercent !== null && modelProgress.current !== null && modelProgress.total !== null && (
+              <small>{progressPercent.toFixed(1)}% · {formatBytes(modelProgress.current)} of {formatBytes(modelProgress.total)}</small>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="model-cards">
@@ -134,7 +151,8 @@ export function ModelsView({ engines, settings, modelStage, onSettingsChange, on
             <input type="range" min="0.1" max="1.5" step="0.05" value={draft.maya1_temperature}
               onChange={(event) => setDraft({ ...draft, maya1_temperature: Number(event.target.value) })} />
           </label>
-          <small>0.4 is the reference default. Lower is steadier; higher is more expressive but less consistent between sentences. GPU speed with llama.cpp needs a CUDA build of llama-cpp-python; the default install runs on CPU.</small>
+          <small>0.4 is the reference default. Lower is steadier; higher is more expressive but less consistent between sentences. When an NVIDIA GPU and CUDA toolkit are present, AudiobookGen builds llama.cpp with CUDA automatically; otherwise it keeps the CPU fallback.</small>
+          {status.get("maya1")?.accelerator_message && <p className="accelerator-state">{status.get("maya1")?.accelerator_message}</p>}
           {!status.get("maya1")?.installed && (
             <button className="primary-button" disabled={busyEngine !== null} onClick={() => void download("maya1")}>
               {busyEngine === "maya1" ? "Installing…" : `Download Maya1 ${draft.maya1_quant}`}
@@ -152,29 +170,35 @@ export function ModelsView({ engines, settings, modelStage, onSettingsChange, on
         <article className="card model-card">
           <header>
             <h2>{ENGINE_LABELS.voxtral}</h2>
-            <span className={voxtral?.installed && voxtral?.server_reachable ? "status-dot ready" : "status-dot"} />
+            <span className={voxtral?.installed && voxtral?.runtime_installed ? "status-dot ready" : "status-dot"} />
           </header>
-          <p>Mistral's lifelike TTS with preset voices in nine languages. Voxtral is only supported by vLLM-Omni, so it runs as a separate local server that AudiobookGen talks to. Needs a GPU with roughly 12 GB or more of free VRAM.</p>
+          <p>Mistral's lifelike TTS adapted for a 12 GB NVIDIA GPU. AudiobookGen selectively quantizes the language backbone to HQQ INT4 while keeping its acoustic transformer and codec in BF16. The existing local narration worker owns the model, so no server or terminal setup is required.</p>
           <small className="model-path">{voxtral?.path}</small>
-          <label className="field">Server URL
-            <input value={draft.voxtral_server_url} onChange={(event) => setDraft({ ...draft, voxtral_server_url: event.target.value })} />
+          <label className="field">Quality profile
+            <select value={draft.voxtral_profile} onChange={(event) => setDraft({ ...draft, voxtral_profile: event.target.value as AppSettings["voxtral_profile"] })}>
+              <option value="balanced">Balanced · 3 flow steps · CFG 1.2 · compiled</option>
+              <option value="quality">Quality · 8 flow steps · CFG 1.2</option>
+              <option value="compatibility">Compatibility · 3 flow steps · CFG 1.2 · no compile</option>
+            </select>
           </label>
-          <p className="server-state">
-            Server: {voxtral?.server_reachable ? "reachable" : "not reachable"} at {voxtral?.server_url}
-          </p>
-          {!voxtral?.installed && (
-            <button className="primary-button" disabled={busyEngine !== null} onClick={() => void download("voxtral")}>
-              {busyEngine === "voxtral" ? "Downloading…" : "Download Voxtral weights (about 9 GB)"}
+          <small>Every production profile retains text-conditioning CFG. Compatibility mode is the fallback after a verified compilation failure; it does not reduce narration quality by disabling CFG.</small>
+          {voxtral?.accelerator_message && <p className="accelerator-state">{voxtral.accelerator_message}</p>}
+          <label className="license-consent">
+            <input type="checkbox" checked={draft.voxtral_license_accepted} onChange={(event) => setDraft({ ...draft, voxtral_license_accepted: event.target.checked })} />
+            <span>I accept the Voxtral model and reference voices under CC BY-NC 4.0. The adapted inference code is MIT; the weights are not licensed for commercial use.</span>
+          </label>
+          <p className="server-state">INT4 dependencies: {voxtral?.runtime_installed ? "installed" : "not installed"} · Weights: {voxtral?.installed ? "installed" : "not installed"}</p>
+          {(!voxtral?.installed || !voxtral?.runtime_installed) && (
+            <button className="primary-button" disabled={busyEngine !== null || !draft.voxtral_license_accepted || voxtral?.hardware_supported === false} onClick={() => void download("voxtral")}>
+              {busyEngine === "voxtral" ? "Installing…" : "Install Voxtral INT4 + CUDA runtime"}
             </button>
           )}
-          <details>
-            <summary>How to start the Voxtral server</summary>
-            <pre className="serve-command">{serveCommand}</pre>
-            <small>Run these once in a terminal after the weights finish downloading. Keep the server running while generating; stop it to free VRAM.</small>
-          </details>
+          {voxtral?.runtime_installed && (
+            <button className="secondary-button" onClick={() => void stopVoxtral()}>Stop narration worker and free VRAM</button>
+          )}
           <div className="preview-row">
             <select value={previewVoice.voxtral} onChange={(event) => setPreviewVoice({ ...previewVoice, voxtral: event.target.value })}>
-              {VOXTRAL_PRESET_VOICES.map((voice) => <option key={voice} value={voice}>{voice.replace(/_/g, " ")}</option>)}
+              {(voxtral?.voices.length ? voxtral.voices : VOXTRAL_PRESET_VOICES).map((voice) => <option key={voice} value={voice}>{voice.replace(/_/g, " ")}</option>)}
             </select>
             <button disabled={!voxtral?.installed || previewBusy !== null} onClick={() => void playPreview("voxtral")}>
               {previewBusy === "voxtral" ? "Synthesizing…" : "Preview voice"}

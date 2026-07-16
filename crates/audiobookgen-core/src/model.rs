@@ -220,7 +220,9 @@ pub struct AppSettings {
     pub maya1_quant: String,
     pub maya1_device: String,
     pub maya1_temperature: f32,
-    pub voxtral_server_url: String,
+    pub voxtral_profile: String,
+    pub voxtral_seed: u64,
+    pub voxtral_license_accepted: bool,
     pub voxtral_default_voice: String,
 }
 
@@ -231,8 +233,10 @@ impl Default for AppSettings {
             maya1_quant: "Q8_0".into(),
             maya1_device: "auto".into(),
             maya1_temperature: 0.4,
-            voxtral_server_url: "http://127.0.0.1:8570".into(),
-            voxtral_default_voice: "narrator_female".into(),
+            voxtral_profile: "balanced".into(),
+            voxtral_seed: 0,
+            voxtral_license_accepted: false,
+            voxtral_default_voice: "neutral_female".into(),
         }
     }
 }

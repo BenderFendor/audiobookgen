@@ -52,3 +52,39 @@
 
 ---
 
+## 2026-07-16 08:18
+
+**What happened:** Post-edit lint hook requires undeclared oxlint-tsgolint even though the repo uses tsc and Vitest; hook failure obscures otherwise valid TypeScript edits.
+
+---
+
+## 2026-07-16 08:35
+
+**What happened:** PreToolUse sensitive-path hook blocked adding a model vocabulary source file because ordinary inference identifiers were mistaken for secrets.
+
+---
+
+## 2026-07-16 08:46
+
+**What happened:** Verification command drift: worker pyproject has no test extra and Vitest rejects Jest's --runInBand flag; use the repository's actual dependency group and plain npm test.
+
+---
+
+## 2026-07-16 09:02
+
+**What happened:** GPU watchdog command failed immediately because the app's production worker environment intentionally omits pytest; hardware tests should use stdlib unittest or the development environment.
+
+---
+
+## 2026-07-16 09:09
+
+**What happened:** Frontend visual verifier could not attach because Chrome is not running and no DevToolsActivePort exists; actual Tauri runtime smoke continued, but Chrome MCP visual checks were skipped per repo rule.
+
+---
+
+## 2026-07-16 09:12
+
+**What happened:** A metadata-inspection find pipeline produced expected SIGPIPE noise after head exited; prefer a bounded rg/read command for Hugging Face metadata.
+
+---
+

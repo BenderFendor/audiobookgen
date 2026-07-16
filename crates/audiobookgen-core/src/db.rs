@@ -115,7 +115,12 @@ impl LibraryDatabase {
             "engine",
             "TEXT NOT NULL DEFAULT 'kokoro'",
         )?;
-        add_column_if_missing(&connection, "generated_segments", "word_timings_json", "TEXT")?;
+        add_column_if_missing(
+            &connection,
+            "generated_segments",
+            "word_timings_json",
+            "TEXT",
+        )?;
         Ok(())
     }
 
@@ -536,7 +541,9 @@ fn add_column_if_missing(
         |row| row.get(0),
     )?;
     if !exists {
-        connection.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"))?;
+        connection.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+        ))?;
     }
     Ok(())
 }

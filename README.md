@@ -9,8 +9,9 @@ AudiobookGen is a local-first desktop application that turns DRM-free EPUB 2 and
 - Configures footnotes, captions, and tables during import.
 - Extracts book metadata, cover art, chapter order, and readable XHTML.
 - Normalizes English text deterministically before synthesis.
-- Runs one persistent Kokoro worker instead of reloading the model for every sentence.
-- Downloads Kokoro on first use, then loads the model and voice files from local storage.
+- Runs Kokoro, CUDA-capable Maya1, and selective-HQQ-INT4 Voxtral inference in one supervised local Python worker.
+- Installs model runtimes on first use, including automatic CUDA builds where supported, then loads weights from local storage.
+- Shows byte-level model download progress and indeterminate runtime-install/start progress.
 - Generates the current and next chapter or the complete selected book.
 - Caches sentence WAV files by text, voice, speed, model, and pipeline version.
 - Resumes interrupted jobs without regenerating valid cached sentences.
@@ -42,10 +43,10 @@ Rust desktop shell + audiobookgen-core
   └── accountless folder sync package
               │ JSON Lines over stdio
               ▼
-Persistent Python Kokoro worker
-  ├── local model installation
-  ├── Misaki English G2P
-  └── 24 kHz sentence synthesis
+Managed inference processes
+  ├── Python worker: Kokoro + CUDA-capable Maya1 + Voxtral 4B
+  ├── one serialized GPU inference queue
+  └── typed 24/48 kHz sentence audio results
 ```
 
 See [Architecture](docs/ARCHITECTURE.md), [Research decisions](docs/RESEARCH.md), [Platform support](docs/PLATFORMS.md), and [Sync package](docs/SYNC.md).
@@ -61,6 +62,11 @@ Prerequisites:
 - Tauri platform dependencies
 - FFmpeg in `PATH` for M4A, M4B, and narrated EPUB export
 
+Optional GPU paths:
+
+- NVIDIA GPU plus CUDA toolkit for automatic Maya1 CUDA acceleration
+- Linux, NVIDIA compute capability 8.0+, and 12 GB VRAM for Voxtral HQQ INT4
+
 Install the JavaScript dependencies:
 
 ```bash
@@ -70,9 +76,8 @@ npm install
 AudiobookGen normally creates a private Python environment in its application-data directory the first time Kokoro is used. During development, an explicit environment makes iteration faster:
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e services/tts-worker
+uv venv .venv --python 3.12
+uv pip install --python .venv/bin/python -e 'services/tts-worker[dev]' --torch-backend auto
 export AUDIOBOOKGEN_PYTHON="$PWD/.venv/bin/python"
 ```
 
@@ -101,8 +106,8 @@ cargo check -p audiobookgen-desktop
 
 ## Data and privacy
 
-The original EPUB is copied into the local library and never modified. Generated audio, model files, progress, and exports remain in the application-data directory or a destination explicitly selected by the user. Book text is sent only through a local stdio pipe to the Kokoro worker.
+The original EPUB is copied into the local library and never modified. Generated audio, model files, progress, and exports remain in the application-data directory or a destination explicitly selected by the user. Book text is sent only through a local stdio pipe to the supervised narration worker; Voxtral does not open an HTTP port.
 
 ## Licensing
 
-AudiobookGen source is AGPL-3.0-or-later. Kokoro model weights and official inference code are Apache-2.0. Dependencies retain their own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md).
+AudiobookGen source is AGPL-3.0-or-later. Kokoro model weights and official inference code are Apache-2.0. Voxtral weights and reference voices are CC BY-NC 4.0 and require explicit acceptance before download; the adapted `voxtral-int4` inference implementation is MIT. Dependencies retain their own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md) and [Voxtral integration](docs/VOXTRAL.md).

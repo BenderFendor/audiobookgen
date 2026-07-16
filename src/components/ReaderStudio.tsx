@@ -264,7 +264,8 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
     setProfileDraft((draft) => draft && {
       ...draft,
       engine,
-      voice: engine === "kokoro" ? "af_heart" : engine === "voxtral" ? "narrator_female" : "Adult narrator, neutral accent, warm and clear",
+      voice: engine === "kokoro" ? "af_heart" : engine === "voxtral" ? "neutral_female" : "Adult narrator, neutral accent, warm and clear",
+      speed: engine === "voxtral" ? 1.0 : draft.speed,
     });
   };
 
@@ -445,8 +446,8 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
                 <textarea rows={3} value={profileDraft.voice} placeholder="40-year-old female, low pitch, warm, slight British accent" onChange={(event) => setProfileDraft({ ...profileDraft, voice: event.target.value })} />
               </label>
             )}
-            <label className="field">Speed · {profileDraft.speed.toFixed(2)}×{profileDraft.engine === "maya1" ? " (ignored by Maya1)" : ""}
-              <input type="range" min="0.5" max="2" step="0.05" value={profileDraft.speed} onChange={(event) => setProfileDraft({ ...profileDraft, speed: Number(event.target.value) })} />
+            <label className="field">Speed · {profileDraft.speed.toFixed(2)}×{profileDraft.engine === "maya1" ? " (ignored by Maya1)" : profileDraft.engine === "voxtral" ? " (fixed by Voxtral)" : ""}
+              <input disabled={profileDraft.engine === "voxtral"} type="range" min="0.5" max="2" step="0.05" value={profileDraft.speed} onChange={(event) => setProfileDraft({ ...profileDraft, speed: Number(event.target.value) })} />
             </label>
             <div className="editor-actions">
               <button className="secondary-button" onClick={() => setProfileDraft(null)}>Cancel</button>

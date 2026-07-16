@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--workspace",
+    "--all-targets"
+  ],
+  "cwd": "/home/bender/projects/audiobookgen",
+  "duration_seconds": 20.363,
+  "max_rss_kb": 1202264,
+  "returncode": 0,
+  "stderr_tail": "   Compiling audiobookgen-core v0.1.0 (/home/bender/projects/audiobookgen/crates/audiobookgen-core)\n   Compiling audiobookgen-desktop v0.1.0 (/home/bender/projects/audiobookgen/apps/desktop/src-tauri)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.99s\n     Running unittests src/lib.rs (target/debug/deps/audiobookgen_core-a636b658f2da1c34)\n     Running tests/cache_profiles.rs (target/debug/deps/cache_profiles-0df68beb97819559)\n     Running tests/epub_pipeline.rs (target/debug/deps/epub_pipeline-67a93b16b953f3bd)\n     Running unittests src/lib.rs (target/debug/deps/audiobookgen_desktop_lib-b81fcc636b96e720)\n     Running unittests src/main.rs (target/debug/deps/AudiobookGen-42c2e59d7a4b2cf7)",
+  "stdout_tail": "\nrunning 7 tests\ntest epub::tests::joins_paths_without_escaping_root ... ok\ntest narration::tests::keeps_abbreviations_together ... ok\ntest narration::tests::separates_dialogue ... ok\ntest epub::tests::ignores_font_obfuscation ... ok\ntest epub::tests::counts_footnote_elements_once_each ... ok\ntest normalize::tests::expands_bookish_text ... ok\ntest normalize::tests::expands_roman_chapters ... ok\n\ntest result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s\n\n\nrunning 2 tests\ntest cache_key_changes_with_spoken_pronunciation ... ok\ntest cache_key_changes_with_voice_and_speed ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 1 test\ntest inspects_and_plans_reflowable_and_fixed_epub_content ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s\n\n\nrunning 3 tests\ntest voxtral::tests::parses_nvidia_smi_gpu_row ... ok\ntest voxtral::tests::recognizes_only_loopback_server_urls_as_managed ... ok\ntest voxtral::tests::reports_vram_below_voxtral_minimum ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n",
+  "timed_out": false,
+  "verdict": "success",
+  "warnings": []
+}

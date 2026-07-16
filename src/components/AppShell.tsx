@@ -8,14 +8,14 @@ import { ModelsView } from "./ModelsView";
 import { ReaderStudio } from "./ReaderStudio";
 import { api, isTauri, onGenerationProgress, onModelProgress } from "@/lib/tauri";
 import { useAppStore } from "@/lib/store";
-import type { AppSettings, EngineModelStatus, ImportSelection, TtsEngine } from "@/lib/types";
+import type { AppSettings, EngineModelStatus, ImportSelection, ModelProgress, TtsEngine } from "@/lib/types";
 
 export function AppShell() {
   const { books, activeBook, importReview, generation, error, setBooks, setActiveBook, setImportReview, setGeneration, setError } = useAppStore();
   const [view, setView] = useState<"library" | "models">("library");
   const [engines, setEngines] = useState<EngineModelStatus[] | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [modelStage, setModelStage] = useState<string | null>(null);
+  const [modelProgress, setModelProgress] = useState<ModelProgress | null>(null);
 
   const refreshBooks = useCallback(async () => {
     if (!isTauri()) return;
@@ -42,7 +42,7 @@ export function AppShell() {
     let unlisten: (() => void) | undefined;
     let unlistenModel: (() => void) | undefined;
     onGenerationProgress(setGeneration).then((fn) => { unlisten = fn; }).catch((reason: unknown) => setError(String(reason)));
-    onModelProgress(setModelStage).then((fn) => { unlistenModel = fn; }).catch(() => undefined);
+    onModelProgress(setModelProgress).then((fn) => { unlistenModel = fn; }).catch(() => undefined);
     return () => { unlisten?.(); unlistenModel?.(); };
   }, [refreshBooks, refreshModels, setBooks, setError, setGeneration]);
 
@@ -74,10 +74,14 @@ export function AppShell() {
     setError(null);
     try {
       await api.downloadEngineModel(engine);
-      setModelStage(null);
     } finally {
       await refreshModels().catch(() => undefined);
     }
+  };
+
+  const stopVoxtral = async () => {
+    await api.stopVoxtralRuntime();
+    await refreshModels();
   };
 
   const saveSettings = async (next: AppSettings) => {
@@ -108,7 +112,7 @@ export function AppShell() {
         <div className="model-banner">
           <p>
             <strong>No narration model is installed.</strong>{" "}
-            {modelStage ?? "Open the Models page to download Kokoro (fast, 330 MB), Maya1 (voice design), or Voxtral (lifelike presets)."}
+            {modelProgress?.message ?? "Open the Models page to download Kokoro (fast, 330 MB), Maya1 (voice design), or Voxtral (lifelike presets)."}
           </p>
           <button className="secondary-button" onClick={() => { setActiveBook(null); setView("models"); }}>Open Models</button>
         </div>
@@ -116,7 +120,7 @@ export function AppShell() {
       {activeBook
         ? <ReaderStudio book={activeBook} generation={generation} onBack={() => setActiveBook(null)} onRefresh={refreshActive} />
         : view === "models" && engines && settings
-          ? <ModelsView engines={engines} settings={settings} modelStage={modelStage} onSettingsChange={saveSettings} onDownload={downloadEngine} onError={setError} />
+          ? <ModelsView engines={engines} settings={settings} modelProgress={modelProgress} onSettingsChange={saveSettings} onDownload={downloadEngine} onStopVoxtral={stopVoxtral} onError={setError} />
           : <LibraryView books={books} onOpen={(id) => void openBook(id)} onImport={() => void chooseEpub()} />}
       {importReview && <ImportReviewPanel review={importReview} onCancel={() => setImportReview(null)} onImport={importBook} />}
     </div>
