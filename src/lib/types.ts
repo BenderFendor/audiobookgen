@@ -92,10 +92,13 @@ export interface Fragment {
   cache_key: string;
 }
 
+export type TtsEngine = "kokoro" | "maya1" | "voxtral";
+
 export interface NarrationProfile {
   id: string;
   book_id: string;
   name: string;
+  engine: TtsEngine;
   voice: string;
   speed: number;
   model_revision: string;
@@ -107,6 +110,7 @@ export interface NarrationProfile {
 
 export interface CreateNarrationProfile {
   name: string;
+  engine: TtsEngine;
   voice: string;
   speed: number;
 }
@@ -143,9 +147,39 @@ export interface PronunciationRule {
   created_at: string;
 }
 
-export interface ModelStatus {
+export interface EngineModelStatus {
+  engine: TtsEngine;
   installed: boolean;
   path: string;
+  quant: string | null;
+  server_reachable: boolean | null;
+  server_url: string | null;
+}
+
+export interface AppSettings {
+  models_root: string | null;
+  maya1_quant: string;
+  maya1_device: string;
+  maya1_temperature: number;
+  voxtral_server_url: string;
+  voxtral_default_voice: string;
+}
+
+export interface WordTiming {
+  word: string;
+  start_ms: number;
+  end_ms: number;
+}
+
+export interface GeneratedSegment {
+  fragment_id: string;
+  profile_id: string;
+  cache_key: string;
+  audio_path: string;
+  duration_ms: number;
+  sample_rate: number;
+  word_timings: WordTiming[];
+  created_at: string;
 }
 
 export type GenerationState = "running" | "generating" | "complete" | "failed" | "cancelled";

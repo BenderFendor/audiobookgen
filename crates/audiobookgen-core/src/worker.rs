@@ -15,17 +15,27 @@ pub enum WorkerRequest {
     Capabilities {
         id: String,
     },
+    ModelStatus {
+        id: String,
+        engine: String,
+        model_dir: PathBuf,
+        options: Value,
+    },
     DownloadModel {
         id: String,
+        engine: String,
         model_dir: PathBuf,
+        options: Value,
     },
     Generate {
         id: String,
+        engine: String,
         text: String,
         voice: String,
         speed: f32,
         output_path: PathBuf,
         model_dir: PathBuf,
+        options: Value,
     },
     Shutdown {
         id: String,
@@ -36,6 +46,7 @@ impl WorkerRequest {
         match self {
             Self::Ping { id }
             | Self::Capabilities { id }
+            | Self::ModelStatus { id, .. }
             | Self::DownloadModel { id, .. }
             | Self::Generate { id, .. }
             | Self::Shutdown { id } => id,
@@ -56,6 +67,8 @@ pub struct WorkerResponse {
     pub duration_ms: Option<u64>,
     #[serde(default)]
     pub sample_rate: Option<u32>,
+    #[serde(default)]
+    pub word_timings: Vec<crate::model::WordTiming>,
     #[serde(default)]
     pub payload: Value,
 }

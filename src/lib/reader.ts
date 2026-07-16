@@ -5,6 +5,14 @@ import type { Fragment, FragmentLocator } from "./types";
 export type ReaderFlow = "paginated" | "scrolled-doc";
 
 const HIGHLIGHT_STYLE = "background: rgba(245, 230, 168, 0.9); border-radius: 2px;";
+const WORD_STYLE = "background: rgba(228, 178, 74, 0.95); border-radius: 2px;";
+
+export interface FragmentPointerEvent {
+  fragmentId: string;
+  /** Coordinates in the host page space (iframe offset already applied). */
+  x: number;
+  y: number;
+}
 
 interface FragmentText {
   id: string;
@@ -60,8 +68,11 @@ export class EpubReader {
   private rendition: Rendition | null = null;
   private fragments: Fragment[] = [];
   private onFragmentClick: ((fragmentId: string) => void) | null = null;
+  private onFragmentContext: ((event: FragmentPointerEvent) => void) | null = null;
   private fragmentElements = new Map<string, HTMLElement[]>();
   private currentFragmentId: string | null = null;
+  private wordElements: HTMLElement[] = [];
+  private activeWordIndex = -1;
   private destroyed = false;
 
   async open(sourcePath: string, container: HTMLElement, flow: ReaderFlow, onLocation: (locator: FragmentLocator) => void): Promise<void> {
@@ -87,16 +98,23 @@ export class EpubReader {
     await rendition.display();
   }
 
-  setFragments(fragments: Fragment[], onClick: (fragmentId: string) => void): void {
+  setFragments(
+    fragments: Fragment[],
+    onClick: (fragmentId: string) => void,
+    onContext?: (event: FragmentPointerEvent) => void,
+  ): void {
     const previousChapterId = this.fragments[0]?.chapter_id;
     const nextChapterId = fragments[0]?.chapter_id;
     if (previousChapterId && previousChapterId !== nextChapterId) this.clearFragmentBindings();
     this.fragments = fragments;
     this.onFragmentClick = onClick;
+    this.onFragmentContext = onContext ?? null;
     this.bindFragments();
   }
 
   setCurrent(fragmentId: string | null): void {
+    this.setActiveWord(-1);
+    this.wordElements = [];
     if (this.currentFragmentId) {
       for (const previous of this.fragmentElements.get(this.currentFragmentId) ?? []) {
         previous.removeAttribute("data-abg-current");
@@ -111,7 +129,69 @@ export class EpubReader {
       element.setAttribute("data-abg-current", "true");
       element.style.cssText += HIGHLIGHT_STYLE;
     }
+    this.wordElements = this.wrapWords(elements);
     elements[0]?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+
+  /** How many word spans the current sentence produced. */
+  wordCount(): number {
+    return this.wordElements.length;
+  }
+
+  /** Highlight the nth word of the current sentence; -1 clears it. */
+  setActiveWord(index: number): void {
+    if (index === this.activeWordIndex) return;
+    const previous = this.wordElements[this.activeWordIndex];
+    if (previous) previous.style.background = "";
+    this.activeWordIndex = index;
+    const next = this.wordElements[index];
+    if (next) next.style.cssText += WORD_STYLE;
+  }
+
+  /** Split the sentence markers' text into per-word spans, in reading order. */
+  private wrapWords(elements: HTMLElement[]): HTMLElement[] {
+    const words: HTMLElement[] = [];
+    for (const element of elements) {
+      const existing = element.querySelectorAll<HTMLElement>("[data-abg-word]");
+      if (existing.length) {
+        words.push(...existing);
+        continue;
+      }
+      const document = element.ownerDocument;
+      const walker = document.createTreeWalker(element, document.defaultView?.NodeFilter.SHOW_TEXT ?? 4);
+      const textNodes: Text[] = [];
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) textNodes.push(node as Text);
+      for (const textNode of textNodes) {
+        const parts = textNode.data.split(/(\s+)/u);
+        if (parts.length <= 1) {
+          if (textNode.data.trim()) words.push(this.wrapWordNode(textNode));
+          continue;
+        }
+        const replacement = document.createDocumentFragment();
+        for (const part of parts) {
+          if (!part) continue;
+          if (/^\s+$/u.test(part)) {
+            replacement.append(document.createTextNode(part));
+          } else {
+            const span = document.createElement("span");
+            span.dataset.abgWord = String(words.length);
+            span.textContent = part;
+            replacement.append(span);
+            words.push(span);
+          }
+        }
+        textNode.replaceWith(replacement);
+      }
+    }
+    return words;
+  }
+
+  private wrapWordNode(textNode: Text): HTMLElement {
+    const span = textNode.ownerDocument.createElement("span");
+    span.dataset.abgWord = "";
+    textNode.replaceWith(span);
+    span.append(textNode);
+    return span;
   }
 
   async goTo(locator: FragmentLocator): Promise<void> {
@@ -162,6 +242,21 @@ export class EpubReader {
           event.stopPropagation();
           this.onFragmentClick?.(fragmentId);
         });
+        document.body.addEventListener("contextmenu", (event) => {
+          const marker = (event.target as Element | null)?.closest<HTMLElement>("[data-abg-fragment]");
+          const fragmentId = marker?.dataset.abgFragment;
+          if (!fragmentId || !this.onFragmentContext) return;
+          event.preventDefault();
+          event.stopPropagation();
+          // Reader content renders in an iframe; report host-page coordinates.
+          const frame = document.defaultView?.frameElement as HTMLElement | null;
+          const frameRect = frame?.getBoundingClientRect();
+          this.onFragmentContext({
+            fragmentId,
+            x: (frameRect?.left ?? 0) + event.clientX,
+            y: (frameRect?.top ?? 0) + event.clientY,
+          });
+        });
       }
       const blocks = Array.from(document.body.querySelectorAll<HTMLElement>("p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, td, th"));
       for (const block of blocks) {
@@ -195,6 +290,7 @@ export class EpubReader {
           const marker = document.createElement("span");
           marker.dataset.abgFragment = slice.fragmentId;
           marker.style.cursor = "pointer";
+          marker.title = "Click to listen from here. Right-click for options.";
           selected.parentNode?.replaceChild(marker, selected);
           marker.append(selected);
           const elements = this.fragmentElements.get(slice.fragmentId) ?? [];

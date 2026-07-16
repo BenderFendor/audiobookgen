@@ -16,6 +16,7 @@ use chrono::Utc;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,11 +35,21 @@ pub struct AppRuntime {
     ffmpeg: PathBuf,
 }
 
+pub const ENGINES: &[&str] = &["kokoro", "maya1", "voxtral"];
+
 #[derive(Debug, Serialize)]
-pub struct ModelStatus {
+pub struct EngineModelStatus {
+    pub engine: String,
     pub installed: bool,
     pub path: PathBuf,
+    /// For maya1: which quantization the status refers to.
+    pub quant: Option<String>,
+    /// For voxtral: whether the vLLM-Omni server answered.
+    pub server_reachable: Option<bool>,
+    pub server_url: Option<String>,
 }
+
+const SETTINGS_KEY: &str = "app_settings";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,48 +106,139 @@ impl AppRuntime {
         })
     }
 
-    async fn worker(&self) -> Result<Arc<WorkerSupervisor>> {
+    pub fn settings(&self) -> AppSettings {
+        self.core
+            .db
+            .get_setting(SETTINGS_KEY)
+            .ok()
+            .flatten()
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_settings(&self, settings: &AppSettings) -> Result<()> {
+        self.core
+            .db
+            .set_setting(SETTINGS_KEY, &serde_json::to_string(settings)?)
+    }
+
+    /// Root directory for every engine's weights and Hugging Face caches.
+    /// Prefers the big storage volume when present so multi-gigabyte models
+    /// stay off the system drive; the Models page can override it.
+    fn models_root(&self) -> PathBuf {
+        if let Some(root) = self.settings().models_root {
+            return root;
+        }
+        let big_storage = PathBuf::from("/mnt/Big storage");
+        if big_storage.is_dir() {
+            big_storage.join("AudiobookGen/models")
+        } else {
+            self.core.data_dir.join("models")
+        }
+    }
+
+    fn engine_model_dir(&self, engine: &str) -> PathBuf {
+        let subdir = match engine {
+            "maya1" => "maya1",
+            "voxtral" => "voxtral-4b-tts",
+            _ => "kokoro-82m",
+        };
+        let configured = self.models_root().join(subdir);
+        if engine == "kokoro" && !kokoro_installed(&configured) {
+            // Installs from before the configurable models root live under the
+            // app data directory; keep using them instead of re-downloading.
+            let legacy = self.core.data_dir.join("models/kokoro-82m");
+            if kokoro_installed(&legacy) {
+                return legacy;
+            }
+        }
+        configured
+    }
+
+    fn engine_options(&self, engine: &str) -> Value {
+        let settings = self.settings();
+        match engine {
+            "maya1" => serde_json::json!({
+                "quant": settings.maya1_quant,
+                "device": settings.maya1_device,
+                "temperature": settings.maya1_temperature,
+            }),
+            "voxtral" => serde_json::json!({
+                "server_url": settings.voxtral_server_url,
+            }),
+            _ => serde_json::json!({}),
+        }
+    }
+
+    /// Worker with the dependency extras this engine needs installed. If the
+    /// install added new packages, the running worker is restarted so it can
+    /// import them.
+    async fn worker_for_engine(&self, engine: &str) -> Result<Arc<WorkerSupervisor>> {
+        let extras: &[&str] = match engine {
+            "maya1" => &["maya1"],
+            _ => &[],
+        };
         let mut slot = self.worker.lock().await;
-        self.ensure_worker_environment().await?;
+        let environment_changed = self.ensure_worker_environment(extras).await?;
+        if environment_changed {
+            if let Some(worker) = slot.take() {
+                let _ = worker.shutdown().await;
+            }
+        }
         if let Some(worker) = slot.as_ref() {
             return Ok(worker.clone());
         }
         let args = vec!["-m".to_owned(), "audiobookgen_worker.main".to_owned()];
         let worker = Arc::new(WorkerSupervisor::spawn(&self.python, &args, &self.worker_root).await
-            .with_context(|| format!("Kokoro worker could not start. Install the worker environment or set AUDIOBOOKGEN_PYTHON. Python: {}", self.python.display()))?);
+            .with_context(|| format!("The narration worker could not start. Install the worker environment or set AUDIOBOOKGEN_PYTHON. Python: {}", self.python.display()))?);
         worker
             .ping()
             .await
-            .context("Kokoro worker did not answer its startup check")?;
+            .context("The narration worker did not answer its startup check")?;
         *slot = Some(worker.clone());
         Ok(worker)
     }
 
-    async fn ensure_worker_environment(&self) -> Result<()> {
+    async fn ensure_worker_environment(&self, extras: &[&str]) -> Result<bool> {
         if self.bootstrap_python.is_none() {
-            return Ok(());
+            return Ok(false);
         }
         let bootstrap = self.bootstrap_python.clone().expect("checked above");
         let python = self.python.clone();
         let worker_root = self.worker_root.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
+        let requested_extras: Vec<String> = extras.iter().map(|extra| extra.to_string()).collect();
+        tokio::task::spawn_blocking(move || -> Result<bool> {
             let venv_dir = python
                 .parent()
                 .and_then(Path::parent)
                 .ok_or_else(|| anyhow!("invalid managed Python path"))?
                 .to_path_buf();
-            // The marker records the interpreter version and a hash of the worker's
-            // pyproject. A missing marker means the last install never finished; a
-            // stale hash means the dependency set changed. Either way the packages
-            // are reinstalled, and the venv itself is only rebuilt when absent.
+            // The marker records the interpreter version, a hash of the worker's
+            // pyproject, and which dependency extras are installed. A missing
+            // marker means the last install never finished; a stale hash or a
+            // newly requested extra means packages must be (re)installed. The
+            // venv itself is only rebuilt when absent.
             let marker = venv_dir.join(".audiobookgen-install-ok");
-            let expected_marker = worker_install_stamp(&worker_root)?;
-            let marker_current = std::fs::read_to_string(&marker)
-                .map(|content| content.trim() == expected_marker)
-                .unwrap_or(false);
-            if python.exists() && marker_current {
-                return Ok(());
+            let stamp = worker_install_stamp(&worker_root)?;
+            let (installed_stamp, installed_extras) = std::fs::read_to_string(&marker)
+                .map(|content| parse_install_marker(content.trim()))
+                .unwrap_or_default();
+            let mut wanted_extras: Vec<String> = installed_extras.clone();
+            for extra in &requested_extras {
+                if !wanted_extras.contains(extra) {
+                    wanted_extras.push(extra.clone());
+                }
             }
+            wanted_extras.sort();
+            if python.exists() && installed_stamp == stamp && installed_extras == wanted_extras {
+                return Ok(false);
+            }
+            let install_spec = if wanted_extras.is_empty() {
+                worker_root.to_string_lossy().into_owned()
+            } else {
+                format!("{}[{}]", worker_root.to_string_lossy(), wanted_extras.join(","))
+            };
+            let expected_marker = format_install_marker(&stamp, &wanted_extras);
             if !python.exists() && venv_dir.exists() {
                 std::fs::remove_dir_all(&venv_dir)
                     .context("removing the stale managed Python environment")?;
@@ -166,14 +268,14 @@ impl AppRuntime {
                 let status = std::process::Command::new(&uv)
                     .args(["pip", "install", "--python"])
                     .arg(&python)
-                    .arg(&worker_root)
+                    .arg(&install_spec)
                     .status()
-                    .context("installing the Kokoro worker dependencies with uv")?;
+                    .context("installing the narration worker dependencies with uv")?;
                 if !status.success() {
                     bail!("uv pip install failed with {status}");
                 }
                 std::fs::write(&marker, &expected_marker)?;
-                return Ok(());
+                return Ok(true);
             }
             if !python.exists() {
                 let status = std::process::Command::new(&bootstrap)
@@ -198,25 +300,59 @@ impl AppRuntime {
                     "--disable-pip-version-check",
                     "--no-input",
                 ])
-                .arg(&worker_root)
+                .arg(&install_spec)
                 .status()
-                .context("installing the Kokoro worker dependencies")?;
+                .context("installing the narration worker dependencies")?;
             if !status.success() {
-                bail!("installing the Kokoro worker failed with {status}");
+                bail!("installing the narration worker failed with {status}");
             }
             std::fs::write(&marker, &expected_marker)?;
-            Ok(())
+            Ok(true)
         })
-        .await??;
-        Ok(())
+        .await?
     }
 
-    fn model_dir(&self) -> PathBuf {
-        self.core.data_dir.join("models/kokoro-82m")
-    }
     fn cache_dir(&self) -> PathBuf {
         self.core.data_dir.join("cache/segments")
     }
+}
+
+fn kokoro_installed(model_dir: &Path) -> bool {
+    (model_dir.join("config.json").exists() && model_dir.join("kokoro-v1_0.pth").exists())
+        || model_dir.join("MOCK_MODEL").exists()
+}
+
+fn maya1_installed(model_dir: &Path, quant: &str) -> bool {
+    model_dir.join(format!("maya1.{quant}.gguf")).exists()
+        || model_dir.join("MOCK_MODEL").exists()
+}
+
+fn voxtral_installed(model_dir: &Path) -> bool {
+    model_dir.join("config.json").exists() || model_dir.join("MOCK_MODEL").exists()
+}
+
+/// Cheap TCP reachability probe for the vLLM-Omni server so the Models page
+/// can show live status without booting the Python worker.
+fn server_reachable(url: &str) -> bool {
+    let trimmed = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let authority = trimmed.split('/').next().unwrap_or_default();
+    let target = if authority.contains(':') {
+        authority.to_owned()
+    } else {
+        format!("{authority}:80")
+    };
+    target
+        .as_str()
+        .to_socket_addrs()
+        .ok()
+        .into_iter()
+        .flatten()
+        .any(|address| {
+            std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(500))
+                .is_ok()
+        })
 }
 
 // Kokoro's dependency chain supports >=3.10,<3.14; keep this inside that range.
@@ -224,6 +360,25 @@ const WORKER_PYTHON_VERSION: &str = "3.12";
 
 /// Identity of a finished worker install: interpreter version plus a hash of the
 /// worker's pyproject, so dependency changes trigger a reinstall on upgrade.
+fn format_install_marker(stamp: &str, extras: &[String]) -> String {
+    format!("{stamp}|extras={}", extras.join(","))
+}
+
+fn parse_install_marker(content: &str) -> (String, Vec<String>) {
+    match content.split_once("|extras=") {
+        Some((stamp, extras)) => (
+            stamp.to_owned(),
+            extras
+                .split(',')
+                .filter(|extra| !extra.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        ),
+        // Markers from before extras support carry the bare stamp.
+        None => (content.to_owned(), Vec::new()),
+    }
+}
+
 fn worker_install_stamp(worker_root: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
     let pyproject = std::fs::read(worker_root.join("pyproject.toml"))
@@ -240,15 +395,45 @@ fn managed_python(data_dir: &Path) -> PathBuf {
     }
 }
 
-const SUPPORTED_VOICES: &[&str] = &[
-    "af_heart",
-    "af_bella",
-    "af_nicole",
-    "am_adam",
-    "am_michael",
-    "bf_emma",
-    "bm_george",
+const KOKORO_VOICES: &[&str] = &[
+    "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore", "af_nicole",
+    "af_nova", "af_river", "af_sarah", "af_sky", "am_adam", "am_echo", "am_eric", "am_fenrir",
+    "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa", "bf_alice", "bf_emma",
+    "bf_isabella", "bf_lily", "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
 ];
+
+fn validate_voice(engine: &str, voice: &str) -> Result<()> {
+    match engine {
+        "kokoro" => {
+            if !KOKORO_VOICES.contains(&voice) {
+                bail!("unsupported Kokoro voice");
+            }
+        }
+        // Maya1 voices are free-form natural-language descriptions.
+        "maya1" => {
+            if voice.trim().is_empty() || voice.len() > 500 {
+                bail!("maya1 needs a voice description of up to 500 characters");
+            }
+        }
+        // Voxtral preset names are validated by the server; new presets must
+        // keep working without an app update.
+        "voxtral" => {
+            if voice.trim().is_empty() || voice.len() > 80 {
+                bail!("voxtral needs a preset voice name");
+            }
+        }
+        other => bail!("unknown narration engine: {other}"),
+    }
+    Ok(())
+}
+
+fn engine_model_revision(engine: &str) -> &'static str {
+    match engine {
+        "maya1" => "mradermacher/maya1-GGUF",
+        "voxtral" => "mistralai/Voxtral-4B-TTS-2603",
+        _ => "hexgrad/Kokoro-82M",
+    }
+}
 
 fn command_error(error: impl std::fmt::Display) -> String {
     error.to_string()
@@ -326,6 +511,7 @@ fn import_epub_impl(
         id: Uuid::new_v4(),
         book_id,
         name: "Default narrator".into(),
+        engine: default_engine(),
         voice: "af_heart".into(),
         speed: 1.0,
         model_revision: "hexgrad/Kokoro-82M".into(),
@@ -420,9 +606,7 @@ pub async fn create_narration_profile(
     if input.name.trim().is_empty() {
         return Err("profile name cannot be empty".into());
     }
-    if !SUPPORTED_VOICES.contains(&input.voice.as_str()) {
-        return Err("unsupported Kokoro voice".into());
-    }
+    validate_voice(&input.engine, &input.voice).map_err(command_error)?;
     if !(0.5..=2.0).contains(&input.speed) {
         return Err("speed must be between 0.5 and 2.0".into());
     }
@@ -430,9 +614,10 @@ pub async fn create_narration_profile(
         id: Uuid::new_v4(),
         book_id,
         name: input.name.trim().into(),
+        model_revision: engine_model_revision(&input.engine).into(),
+        engine: input.engine,
         voice: input.voice,
         speed: input.speed,
-        model_revision: "hexgrad/Kokoro-82M".into(),
         model_sha256: None,
         normalization_version: NORMALIZATION_VERSION.into(),
         planner_version: PLANNER_VERSION.into(),
@@ -514,44 +699,113 @@ pub async fn load_progress(
 }
 
 #[tauri::command]
-pub async fn model_status(
+pub async fn get_app_settings(
     runtime: tauri::State<'_, AppRuntime>,
-) -> std::result::Result<ModelStatus, String> {
-    let path = runtime.model_dir();
-    Ok(ModelStatus {
-        installed: (path.join("config.json").exists() && path.join("kokoro-v1_0.pth").exists())
-            || path.join("MOCK_MODEL").exists(),
-        path,
-    })
+) -> std::result::Result<AppSettings, String> {
+    Ok(runtime.settings())
 }
 
 #[tauri::command]
-pub async fn download_model(
+pub async fn update_app_settings(
+    runtime: tauri::State<'_, AppRuntime>,
+    settings: AppSettings,
+) -> std::result::Result<AppSettings, String> {
+    if !["Q8_0", "Q6_K", "Q4_K_M"].contains(&settings.maya1_quant.as_str()) {
+        return Err("unsupported maya1 quantization".into());
+    }
+    if !["auto", "cpu"].contains(&settings.maya1_device.as_str()) {
+        return Err("maya1 device must be auto or cpu".into());
+    }
+    if !(0.1..=1.5).contains(&settings.maya1_temperature) {
+        return Err("maya1 temperature must be between 0.1 and 1.5".into());
+    }
+    if let Some(root) = &settings.models_root {
+        if !root.is_absolute() {
+            return Err("the models folder must be an absolute path".into());
+        }
+        std::fs::create_dir_all(root)
+            .map_err(|error| format!("the models folder is not writable: {error}"))?;
+    }
+    runtime.save_settings(&settings).map_err(command_error)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+pub async fn list_engine_status(
+    runtime: tauri::State<'_, AppRuntime>,
+) -> std::result::Result<Vec<EngineModelStatus>, String> {
+    let settings = runtime.settings();
+    Ok(ENGINES
+        .iter()
+        .map(|&engine| {
+            let path = runtime.engine_model_dir(engine);
+            match engine {
+                "maya1" => EngineModelStatus {
+                    engine: engine.into(),
+                    installed: maya1_installed(&path, &settings.maya1_quant),
+                    path,
+                    quant: Some(settings.maya1_quant.clone()),
+                    server_reachable: None,
+                    server_url: None,
+                },
+                "voxtral" => EngineModelStatus {
+                    engine: engine.into(),
+                    installed: voxtral_installed(&path),
+                    path,
+                    quant: None,
+                    server_reachable: Some(server_reachable(&settings.voxtral_server_url)),
+                    server_url: Some(settings.voxtral_server_url.clone()),
+                },
+                _ => EngineModelStatus {
+                    engine: engine.into(),
+                    installed: kokoro_installed(&path),
+                    path,
+                    quant: None,
+                    server_reachable: None,
+                    server_url: None,
+                },
+            }
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn download_engine_model(
     app: AppHandle,
     runtime: tauri::State<'_, AppRuntime>,
+    engine: String,
 ) -> std::result::Result<Value, String> {
+    if !ENGINES.contains(&engine.as_str()) {
+        return Err("unknown narration engine".into());
+    }
     let stage = |message: &str| {
         let _ = app.emit("model-progress", message);
     };
     stage(
         "Preparing the narration engine. The first run installs Python packages and can take several minutes.",
     );
-    let worker = runtime.worker().await.map_err(|error| {
+    let worker = runtime.worker_for_engine(&engine).await.map_err(|error| {
         stage("The narration engine could not be prepared.");
         command_error(error)
     })?;
-    stage("Downloading the Kokoro model (about 330 MB).");
+    stage(match engine.as_str() {
+        "maya1" => "Downloading Maya1 weights (about 3.4 GB for Q8_0) and the SNAC decoder.",
+        "voxtral" => "Downloading Voxtral 4B TTS weights (about 9 GB).",
+        _ => "Downloading the Kokoro model (about 330 MB).",
+    });
     let response = worker
         .request(WorkerRequest::DownloadModel {
             id: Uuid::new_v4().to_string(),
-            model_dir: runtime.model_dir(),
+            engine: engine.clone(),
+            model_dir: runtime.engine_model_dir(&engine),
+            options: runtime.engine_options(&engine),
         })
         .await
         .map_err(|error| {
-            stage("The Kokoro model download failed.");
+            stage("The model download failed.");
             command_error(error)
         })?;
-    stage("Kokoro is ready.");
+    stage("The model is ready.");
     Ok(response.payload)
 }
 
@@ -559,27 +813,31 @@ pub async fn download_model(
 pub async fn preview_voice(
     runtime: tauri::State<'_, AppRuntime>,
     text: String,
+    engine: String,
     voice: String,
     speed: f32,
 ) -> std::result::Result<String, String> {
-    if !SUPPORTED_VOICES.contains(&voice.as_str()) {
-        return Err("unsupported Kokoro voice".into());
-    }
-    ensure_model(runtime.inner()).map_err(command_error)?;
+    validate_voice(&engine, &voice).map_err(command_error)?;
+    ensure_model(runtime.inner(), &engine).map_err(command_error)?;
     let output = runtime
         .core
         .data_dir
         .join("cache")
         .join(format!("preview-{}.wav", Uuid::new_v4()));
-    let worker = runtime.worker().await.map_err(command_error)?;
+    let worker = runtime
+        .worker_for_engine(&engine)
+        .await
+        .map_err(command_error)?;
     worker
         .request(WorkerRequest::Generate {
             id: Uuid::new_v4().to_string(),
+            engine: engine.clone(),
             text,
             voice,
             speed,
             output_path: output.clone(),
-            model_dir: runtime.model_dir(),
+            model_dir: runtime.engine_model_dir(&engine),
+            options: runtime.engine_options(&engine),
         })
         .await
         .map_err(command_error)?;
@@ -592,7 +850,6 @@ pub async fn queue_generation(
     runtime: tauri::State<'_, AppRuntime>,
     request: QueueGeneration,
 ) -> std::result::Result<String, String> {
-    ensure_model(runtime.inner()).map_err(command_error)?;
     let runtime = runtime.inner().clone();
     let job_id = Uuid::new_v4().to_string();
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -641,6 +898,7 @@ async fn run_generation(
         .db
         .get_profile(request.book_id, request.profile_id)?
         .ok_or_else(|| anyhow!("narration profile not found"))?;
+    ensure_model(runtime, &profile.engine)?;
     let rules = runtime.core.db.pronunciation_rules(request.book_id)?;
     let selected_indices: HashSet<usize> = match request.mode {
         GenerationMode::FullBook => detail
@@ -684,7 +942,7 @@ async fn run_generation(
             message: None,
         },
     )?;
-    let worker = runtime.worker().await?;
+    let worker = runtime.worker_for_engine(&profile.engine).await?;
     let mut completed = 0usize;
     for mut fragment in fragments {
         if cancelled.load(Ordering::Relaxed) {
@@ -742,6 +1000,7 @@ async fn run_generation(
             fragment.cache_key,
             Uuid::new_v4()
         ));
+        let mut word_timings = Vec::new();
         let (duration_ms, sample_rate) = if fragment.kind == FragmentKind::SceneBreak {
             write_silence(&temporary, 40)?;
             (40, 24_000)
@@ -749,13 +1008,16 @@ async fn run_generation(
             let response = worker
                 .request(WorkerRequest::Generate {
                     id: Uuid::new_v4().to_string(),
+                    engine: profile.engine.clone(),
                     text: fragment.spoken_text.clone(),
                     voice: profile.voice.clone(),
                     speed: profile.speed,
                     output_path: temporary.clone(),
-                    model_dir: runtime.model_dir(),
+                    model_dir: runtime.engine_model_dir(&profile.engine),
+                    options: runtime.engine_options(&profile.engine),
                 })
                 .await?;
+            word_timings = response.word_timings.clone();
             (
                 response
                     .duration_ms
@@ -776,6 +1038,7 @@ async fn run_generation(
             audio_path: final_path,
             duration_ms,
             sample_rate,
+            word_timings,
             created_at: Utc::now(),
         })?;
         completed += 1;
@@ -851,14 +1114,34 @@ pub async fn get_generated_audio(
         .map(|segment| segment.audio_path.to_string_lossy().into_owned()))
 }
 
-fn ensure_model(runtime: &AppRuntime) -> Result<()> {
-    if (runtime.model_dir().join("config.json").exists()
-        && runtime.model_dir().join("kokoro-v1_0.pth").exists())
-        || runtime.model_dir().join("MOCK_MODEL").exists()
-    {
+#[tauri::command]
+pub async fn get_generated_segment(
+    runtime: tauri::State<'_, AppRuntime>,
+    fragment_id: String,
+    profile_id: String,
+) -> std::result::Result<Option<GeneratedSegment>, String> {
+    Ok(runtime
+        .core
+        .db
+        .generated_segment(
+            parse_uuid(&fragment_id, "fragment id").map_err(command_error)?,
+            parse_uuid(&profile_id, "profile id").map_err(command_error)?,
+        )
+        .map_err(command_error)?
+        .filter(|segment| segment.audio_path.exists()))
+}
+
+fn ensure_model(runtime: &AppRuntime, engine: &str) -> Result<()> {
+    let model_dir = runtime.engine_model_dir(engine);
+    let installed = match engine {
+        "maya1" => maya1_installed(&model_dir, &runtime.settings().maya1_quant),
+        "voxtral" => voxtral_installed(&model_dir),
+        _ => kokoro_installed(&model_dir),
+    };
+    if installed {
         Ok(())
     } else {
-        bail!("Kokoro is not installed yet. Download the model from the library screen first.")
+        bail!("The {engine} model is not installed yet. Download it from the Models page first.")
     }
 }
 

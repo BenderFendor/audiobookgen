@@ -3,6 +3,11 @@ use sha2::{Digest, Sha256};
 
 pub fn segment_cache_key(fragment: &Fragment, profile: &NarrationProfile) -> String {
     let mut digest = Sha256::new();
+    // Kokoro predates the engine field; hashing it only for other engines
+    // keeps every previously generated Kokoro segment cache-valid.
+    if profile.engine != "kokoro" {
+        update(&mut digest, profile.engine.as_bytes());
+    }
     update(&mut digest, fragment.spoken_text.as_bytes());
     update(&mut digest, &fragment.pause_after_ms.to_le_bytes());
     update(&mut digest, profile.voice.as_bytes());

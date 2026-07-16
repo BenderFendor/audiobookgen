@@ -46,3 +46,9 @@
 
 ---
 
+## 2026-07-16 07:30
+
+**What happened:** oxlint post-tool hook fails on this repo: tsgolint executable missing (oxlint-tsgolint not installed); TS type errors still surface via tsc but JS lint step always errors
+
+---
+

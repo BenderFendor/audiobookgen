@@ -12,9 +12,21 @@ The application has three layers:
 
 1. A statically exported Next.js interface rendered by Tauri's system webview.
 2. A Rust core responsible for all durable state and filesystem changes.
-3. One long-lived Python worker responsible only for Kokoro inference.
+3. One long-lived Python worker responsible only for TTS inference.
 
-There is no local HTTP server. Tauri commands carry user actions into Rust, and Tauri events report generation progress to the interface. Rust communicates with Python through newline-delimited JSON on standard input and output. Audio bytes never travel through JSON; the worker writes a temporary WAV and returns its path and metadata.
+There is no local HTTP server in the app itself. Tauri commands carry user actions into Rust, and Tauri events report generation progress to the interface. Rust communicates with Python through newline-delimited JSON on standard input and output. Audio bytes never travel through JSON; the worker writes a temporary WAV and returns its path, metadata, and optional per-word timings.
+
+## Narration engines
+
+The worker hosts an engine registry; each narration profile picks one engine:
+
+- **Kokoro 82M** (default): in-process, 28 English voices, true per-word timestamps from misaki G2P. About 330 MB.
+- **Maya1 3B**: voice-design TTS (the profile "voice" is a natural-language description, emotion tags inline). Runs quantized GGUF weights through `llama-cpp-python` plus the SNAC 24 kHz decoder. Quantization is configurable (Q8_0 default, near-lossless at ~3.4 GB — chosen to fit a 12 GB GPU). Its heavy dependencies live behind the `[maya1]` extra and install on first download; installing an extra restarts the worker.
+- **Voxtral 4B TTS** (`mistralai/Voxtral-4B-TTS-2603`): preset voices, only supported by vLLM-Omni, so it runs as a separate user-started server. The engine downloads weights and synthesizes through the OpenAI-compatible `/v1/audio/speech` endpoint at a configurable URL. The Models page prints the serve command.
+
+Engines without native timestamps get length-proportional word timings so read-along word highlighting works everywhere. Segment cache keys hash the engine name for non-Kokoro engines only, keeping pre-existing Kokoro caches valid.
+
+Model weights and Hugging Face caches live under a single configurable models root, stored in the settings table. On this machine it defaults to `/mnt/Big storage/AudiobookGen/models` when that volume is mounted, otherwise the app data directory; a legacy Kokoro install under app data keeps working.
 
 ## Import transaction
 

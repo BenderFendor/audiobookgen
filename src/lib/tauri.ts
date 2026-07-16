@@ -1,9 +1,9 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
-  BookDetail, BookSummary, CreateNarrationProfile, Fragment, GenerationProgress,
-  ImportReview, ImportSelection, ModelStatus, NarrationProfile, ProgressState,
-  PronunciationRule, QueueGeneration,
+  AppSettings, BookDetail, BookSummary, CreateNarrationProfile, EngineModelStatus, Fragment,
+  GeneratedSegment, GenerationProgress, ImportReview, ImportSelection, NarrationProfile,
+  ProgressState, PronunciationRule, QueueGeneration, TtsEngine,
 } from "./types";
 
 export function isTauri(): boolean {
@@ -33,12 +33,15 @@ export const api = {
     invoke<PronunciationRule>("save_pronunciation_rule", { bookId, pattern, replacement, caseSensitive }),
   saveProgress: (progress: ProgressState) => invoke<void>("save_progress", { progress }),
   loadProgress: (bookId: string) => invoke<ProgressState | null>("load_progress", { bookId }),
-  modelStatus: () => invoke<ModelStatus>("model_status"),
-  downloadModel: () => invoke<unknown>("download_model"),
-  previewVoice: (text: string, voice: string, speed: number) => invoke<string>("preview_voice", { text, voice, speed }),
+  listEngineStatus: () => invoke<EngineModelStatus[]>("list_engine_status"),
+  downloadEngineModel: (engine: TtsEngine) => invoke<unknown>("download_engine_model", { engine }),
+  getAppSettings: () => invoke<AppSettings>("get_app_settings"),
+  updateAppSettings: (settings: AppSettings) => invoke<AppSettings>("update_app_settings", { settings }),
+  previewVoice: (text: string, engine: TtsEngine, voice: string, speed: number) => invoke<string>("preview_voice", { text, engine, voice, speed }),
   queueGeneration: (request: QueueGeneration) => invoke<string>("queue_generation", { request }),
   cancelGeneration: (jobId: string) => invoke<void>("cancel_generation", { jobId }),
   generatedAudio: (fragmentId: string, profileId: string) => invoke<string | null>("get_generated_audio", { fragmentId, profileId }),
+  generatedSegment: (fragmentId: string, profileId: string) => invoke<GeneratedSegment | null>("get_generated_segment", { fragmentId, profileId }),
   exportM4a: (bookId: string, profileId: string, outputDir: string) => invoke<string[]>("export_m4a", { bookId, profileId, outputDir }),
   exportM4b: (bookId: string, profileId: string, outputPath: string) => invoke<string>("export_m4b_file", { bookId, profileId, outputPath }),
   exportNarratedEpub: (bookId: string, profileId: string, outputPath: string) => invoke<string>("export_narrated_epub_file", { bookId, profileId, outputPath }),

@@ -1,7 +1,7 @@
 [project]
 name = "audiobookgen-worker"
 version = "0.1.0"
-description = "Persistent Kokoro worker for AudiobookGen"
+description = "Persistent multi-engine TTS worker for AudiobookGen (Kokoro, Maya1, Voxtral)"
 requires-python = ">=3.10,<3.14"
 dependencies = [
   "kokoro>=0.9.4,<1",
@@ -18,6 +18,15 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = []
+# Maya1 voice-design TTS: quantized GGUF via llama.cpp plus the SNAC decoder.
+maya1 = [
+  "llama-cpp-python>=0.3.2",
+  "snac>=1.2.1",
+  "torch>=2.2",
+]
+# Voxtral is served by an external vLLM-Omni process; the worker only needs
+# the base install to talk to it.
+voxtral = []
 
 [project.scripts]
 audiobookgen-worker = "audiobookgen_worker.main:main"

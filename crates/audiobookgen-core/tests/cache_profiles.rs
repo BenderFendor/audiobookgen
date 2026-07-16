@@ -31,6 +31,7 @@ fn profile(book_id: Uuid, voice: &str, speed: f32) -> NarrationProfile {
         id: Uuid::new_v4(),
         book_id,
         name: voice.into(),
+        engine: audiobookgen_core::model::default_engine(),
         voice: voice.into(),
         speed,
         model_revision: "hexgrad/Kokoro-82M".into(),

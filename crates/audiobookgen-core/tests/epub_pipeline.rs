@@ -39,6 +39,7 @@ fn inspects_and_plans_reflowable_and_fixed_epub_content() {
         id: Uuid::new_v4(),
         book_id,
         name: "Test".into(),
+        engine: audiobookgen_core::model::default_engine(),
         voice: "af_heart".into(),
         speed: 1.0,
         model_revision: "test".into(),

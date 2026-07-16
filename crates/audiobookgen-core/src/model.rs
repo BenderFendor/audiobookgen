@@ -145,11 +145,17 @@ pub struct FragmentLocator {
     pub cfi: Option<String>,
 }
 
+pub fn default_engine() -> String {
+    "kokoro".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NarrationProfile {
     pub id: Uuid,
     pub book_id: Uuid,
     pub name: String,
+    #[serde(default = "default_engine")]
+    pub engine: String,
     pub voice: String,
     pub speed: f32,
     pub model_revision: String,
@@ -162,6 +168,8 @@ pub struct NarrationProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateNarrationProfile {
     pub name: String,
+    #[serde(default = "default_engine")]
+    pub engine: String,
     pub voice: String,
     pub speed: f32,
 }
@@ -183,6 +191,13 @@ pub struct QueueGeneration {
     pub selected_chapter_indices: Vec<usize>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WordTiming {
+    pub word: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratedSegment {
     pub fragment_id: Uuid,
@@ -191,7 +206,35 @@ pub struct GeneratedSegment {
     pub audio_path: PathBuf,
     pub duration_ms: u64,
     pub sample_rate: u32,
+    #[serde(default)]
+    pub word_timings: Vec<WordTiming>,
     pub created_at: DateTime<Utc>,
+}
+
+/// User-tunable narration settings persisted in the library database.
+/// `models_root` decides where every engine stores weights and caches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppSettings {
+    pub models_root: Option<PathBuf>,
+    pub maya1_quant: String,
+    pub maya1_device: String,
+    pub maya1_temperature: f32,
+    pub voxtral_server_url: String,
+    pub voxtral_default_voice: String,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            models_root: None,
+            maya1_quant: "Q8_0".into(),
+            maya1_device: "auto".into(),
+            maya1_temperature: 0.4,
+            voxtral_server_url: "http://127.0.0.1:8570".into(),
+            voxtral_default_voice: "narrator_female".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

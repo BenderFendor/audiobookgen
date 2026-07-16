@@ -8,8 +8,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from .engine import KokoroEngine
-from .protocol import ProtocolError, parse_generate, require_string
+from .engines import EngineRegistry
+from .protocol import ProtocolError, parse_engine, parse_generate, parse_options, require_string
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -17,34 +17,51 @@ def emit(payload: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
-def handle(engine: KokoroEngine, payload: dict[str, Any]) -> bool:
+def handle(registry: EngineRegistry, payload: dict[str, Any]) -> bool:
     request_type = payload.get("type")
     request_id = require_string(payload, "id", maximum=200)
     if request_type == "ping":
-        emit({"id": request_id, "type": "ready", "payload": engine.capabilities()})
+        emit({"id": request_id, "type": "ready", "payload": registry.capabilities()})
     elif request_type == "capabilities":
-        emit({"id": request_id, "type": "complete", "payload": engine.capabilities()})
+        emit({"id": request_id, "type": "complete", "payload": registry.capabilities()})
+    elif request_type == "model_status":
+        engine = registry.get(parse_engine(payload))
+        model_dir = Path(require_string(payload, "model_dir", maximum=4096)).expanduser()
+        emit({
+            "id": request_id,
+            "type": "complete",
+            "payload": engine.installed(model_dir, parse_options(payload)),
+        })
     elif request_type == "download_model":
+        engine = registry.get(parse_engine(payload))
         model_dir = Path(require_string(payload, "model_dir", maximum=4096)).expanduser()
         if not model_dir.is_absolute():
             raise ProtocolError("model_dir must be absolute")
         emit({"id": request_id, "type": "progress", "state": "downloading"})
-        emit({"id": request_id, "type": "complete", "payload": engine.ensure_model(model_dir)})
+        result = engine.ensure_model(
+            model_dir,
+            parse_options(payload),
+            lambda state: emit({"id": request_id, "type": "progress", "state": state}),
+        )
+        emit({"id": request_id, "type": "complete", "payload": result})
     elif request_type == "generate":
         request = parse_generate(payload)
-        duration_ms, sample_rate = engine.generate(
+        engine = registry.get(request.engine)
+        result = engine.generate(
             request.text,
             request.voice,
             request.speed,
             request.output_path,
             request.model_dir,
+            request.options,
             lambda state: emit({"id": request_id, "type": "progress", "state": state}),
         )
         emit({
             "id": request_id,
             "type": "complete",
-            "duration_ms": duration_ms,
-            "sample_rate": sample_rate,
+            "duration_ms": result.duration_ms,
+            "sample_rate": result.sample_rate,
+            "word_timings": [timing.as_dict() for timing in result.word_timings],
             "payload": {"output_path": str(request.output_path)},
         })
     elif request_type == "shutdown":
@@ -56,7 +73,7 @@ def handle(engine: KokoroEngine, payload: dict[str, Any]) -> bool:
 
 
 def run(mock: bool = False) -> int:
-    engine = KokoroEngine(mock=mock)
+    registry = EngineRegistry(mock=mock)
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -67,7 +84,7 @@ def run(mock: bool = False) -> int:
             if not isinstance(payload, dict):
                 raise ProtocolError("request must be a JSON object")
             request_id = str(payload.get("id", request_id))
-            if not handle(engine, payload):
+            if not handle(registry, payload):
                 return 0
         except (ProtocolError, json.JSONDecodeError) as error:
             emit({"id": request_id, "type": "error", "message": str(error), "payload": {}})
@@ -78,7 +95,7 @@ def run(mock: bool = False) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="AudiobookGen Kokoro worker")
+    parser = argparse.ArgumentParser(description="AudiobookGen TTS worker")
     parser.add_argument("--mock", action="store_true", help="Generate deterministic test WAV files")
     args = parser.parse_args()
     raise SystemExit(run(mock=args.mock or os.environ.get("AUDIOBOOKGEN_WORKER_MOCK") == "1"))
