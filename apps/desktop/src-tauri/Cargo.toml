@@ -32,6 +32,11 @@ uuid.workspace = true
 tauri = { version = "2.10", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-dialog = "2.4"
 
+[dev-dependencies]
+tauri = { version = "2.10", features = ["test"] }
+tempfile.workspace = true
+zip.workspace = true
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

@@ -17,7 +17,6 @@ use chrono::Utc;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,6 +33,11 @@ pub struct AppRuntime {
     /// sentence at or after this fragment, so clicking a sentence pulls the
     /// queue to it between sentence generations.
     anchor: Arc<std::sync::Mutex<Option<Uuid>>>,
+    /// The fragment the listener is actively waiting on, set only by
+    /// anchor_generation (a click that found no cached audio), never by the
+    /// silent playhead-follow in set_generation_anchor. See DF-9 in
+    /// run_generation.
+    urgent: Arc<std::sync::Mutex<Option<Uuid>>>,
     /// The running playhead-fill job, if any: (book, profile, job id).
     anchor_job: Arc<Mutex<Option<(Uuid, Uuid, String)>>>,
     worker_root: PathBuf,
@@ -121,6 +125,7 @@ impl AppRuntime {
             worker: Arc::new(Mutex::new(None)),
             jobs: Arc::new(Mutex::new(HashMap::new())),
             anchor: Arc::new(std::sync::Mutex::new(None)),
+            urgent: Arc::new(std::sync::Mutex::new(None)),
             anchor_job: Arc::new(Mutex::new(None)),
             worker_root,
             python,
@@ -178,7 +183,10 @@ impl AppRuntime {
         configured
     }
 
-    fn engine_options(&self, engine: &str) -> Value {
+    /// `voxtral_profile_override` lets one request run a different Voxtral
+    /// quality profile than the configured default; see DF-9 in
+    /// `run_generation`.
+    fn engine_options(&self, engine: &str, voxtral_profile_override: Option<&str>) -> Value {
         let settings = self.settings();
         match engine {
             "maya1" => serde_json::json!({
@@ -187,7 +195,7 @@ impl AppRuntime {
                 "temperature": settings.maya1_temperature,
             }),
             "voxtral" => serde_json::json!({
-                "profile": settings.voxtral_profile,
+                "profile": voxtral_profile_override.unwrap_or(settings.voxtral_profile.as_str()),
                 "seed": settings.voxtral_seed,
             }),
             _ => serde_json::json!({}),
@@ -433,6 +441,23 @@ fn voxtral_installed(model_dir: &Path) -> bool {
         || model_dir.join("MOCK_MODEL").exists()
 }
 
+/// Voice presets actually installed on disk for this Voxtral model
+/// directory, so the narrator editor and profile creation can validate
+/// against the real set instead of a hardcoded UI list (DF-24).
+fn installed_voxtral_voices(model_dir: &Path) -> Vec<String> {
+    std::fs::read_dir(model_dir.join("voice_embedding"))
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            (entry.path().extension().and_then(|value| value.to_str()) == Some("pt"))
+                .then(|| entry.path().file_stem()?.to_str().map(str::to_owned))
+                .flatten()
+        })
+        .collect()
+}
+
 // Kokoro's dependency chain supports >=3.10,<3.14; keep this inside that range.
 const WORKER_PYTHON_VERSION: &str = "3.12";
 
@@ -496,41 +521,50 @@ fn worker_install_stamp(worker_root: &Path) -> Result<String> {
     Ok(format!("{WORKER_PYTHON_VERSION}:{digest}"))
 }
 
-fn file_sha256(path: &Path) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    let mut source = std::fs::File::open(path)
-        .with_context(|| format!("opening checksum input {}", path.display()))?;
-    let mut digest = Sha256::new();
-    let mut buffer = vec![0_u8; 8 * 1024 * 1024];
-    loop {
-        let read = source.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    Ok(hex::encode(digest.finalize()))
+/// Cheap identity for a file that stands in for its content hash: (size,
+/// mtime in nanoseconds since epoch). Mirrors the quantized-weight cache's
+/// own discriminator (`voxtral_int4/runtime.py::_quant_cache_meta`), which
+/// keys on the same pair instead of re-hashing the multi-gigabyte weights.
+fn file_identity(path: &Path) -> Result<(u64, i64)> {
+    let meta = std::fs::metadata(path)
+        .with_context(|| format!("reading metadata for {}", path.display()))?;
+    let mtime_nanos = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos() as i64)
+        .unwrap_or(0);
+    Ok((meta.len(), mtime_nanos))
 }
 
+/// `profile_override` lets a single fragment generate on a different Voxtral
+/// quality profile than the book's configured one (see DF-9: the first
+/// clicked sentence uses `compatibility` to skip the Balanced/Quality
+/// `torch.compile` stall while the background buffer keeps the configured
+/// profile). The override is folded into the cache key so the two profiles
+/// never share a cached WAV.
+///
+/// The weights checksum is verified once at install time
+/// (`engines/voxtral.py::ensure_model`); re-hashing the full 8-9 GB file on
+/// every generation job cost 80+ seconds measured on this machine. Size and
+/// mtime stand in for weight identity here instead.
 fn voxtral_cache_discriminator(
     model_dir: &Path,
     voice: &str,
     settings: &AppSettings,
+    profile_override: Option<&str>,
 ) -> Result<String> {
-    let model_checksum = file_sha256(&model_dir.join("consolidated.safetensors"))?;
-    let voice_checksum = file_sha256(
+    let (model_size, model_mtime) = file_identity(&model_dir.join("consolidated.safetensors"))?;
+    let (voice_size, voice_mtime) = file_identity(
         &model_dir
             .join("voice_embedding")
             .join(format!("{voice}.pt")),
     )?;
-    let flow_steps = if settings.voxtral_profile == "quality" {
-        8
-    } else {
-        3
-    };
+    let profile = profile_override.unwrap_or(settings.voxtral_profile.as_str());
+    let flow_steps = if profile == "quality" { 8 } else { 3 };
     Ok(format!(
-        "model={model_checksum}|voice={voice_checksum}|engine=voxtral-int4-93d3e21|quant=hqq-int4-g64-tile-packed-to-4d|profile={}|flow_steps={flow_steps}|cfg=1.2|seed={}|postprocess=lowpass-resample-peak-v1|sample_rate=48000",
-        settings.voxtral_profile, settings.voxtral_seed
+        "model_size={model_size}|model_mtime={model_mtime}|voice_size={voice_size}|voice_mtime={voice_mtime}|engine=voxtral-int4-93d3e21|quant=hqq-int4-g64-tile-packed-to-4d|profile={profile}|flow_steps={flow_steps}|cfg=1.2|seed={}|postprocess=lowpass-resample-peak-v1|sample_rate=48000",
+        settings.voxtral_seed
     ))
 }
 
@@ -619,8 +653,8 @@ fn command_error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
-fn emit_model_progress(
-    app: &AppHandle,
+fn emit_model_progress<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     engine: &str,
     phase: &str,
     message: impl Into<String>,
@@ -807,6 +841,20 @@ pub async fn create_narration_profile(
         return Err("profile name cannot be empty".into());
     }
     validate_voice(&input.engine, &input.voice).map_err(command_error)?;
+    if input.engine == "voxtral" {
+        let installed = installed_voxtral_voices(&runtime.engine_model_dir("voxtral"));
+        if !installed.iter().any(|voice| voice == &input.voice) {
+            let available = if installed.is_empty() {
+                "none (download the Voxtral model first)".to_owned()
+            } else {
+                installed.join(", ")
+            };
+            return Err(format!(
+                "unknown Voxtral voice \"{}\"; installed voices: {available}",
+                input.voice
+            ));
+        }
+    }
     if !(0.5..=2.0).contains(&input.speed) {
         return Err("speed must be between 0.5 and 2.0".into());
     }
@@ -965,17 +1013,7 @@ pub async fn list_engine_status(
                 "voxtral" => EngineModelStatus {
                     engine: engine.into(),
                     installed: voxtral_installed(&path),
-                    voices: std::fs::read_dir(path.join("voice_embedding"))
-                        .ok()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|entry| entry.ok())
-                        .filter_map(|entry| {
-                            (entry.path().extension().and_then(|value| value.to_str()) == Some("pt"))
-                                .then(|| entry.path().file_stem()?.to_str().map(str::to_owned))
-                                .flatten()
-                        })
-                        .collect(),
+                    voices: installed_voxtral_voices(&path),
                     path,
                     quant: None,
                     runtime_installed: Some(runtime.worker_extra_installed("voxtral")),
@@ -1000,8 +1038,8 @@ pub async fn list_engine_status(
 }
 
 #[tauri::command]
-pub async fn download_engine_model(
-    app: AppHandle,
+pub async fn download_engine_model<R: tauri::Runtime>(
+    app: AppHandle<R>,
     runtime: tauri::State<'_, AppRuntime>,
     engine: String,
 ) -> std::result::Result<Value, String> {
@@ -1040,7 +1078,7 @@ pub async fn download_engine_model(
                 id: Uuid::new_v4().to_string(),
                 engine: engine.clone(),
                 model_dir: runtime.engine_model_dir(&engine),
-                options: runtime.engine_options(&engine),
+                options: runtime.engine_options(&engine, None),
             },
             move |response| {
                 let state = response.state.as_deref().unwrap_or("downloading");
@@ -1074,8 +1112,8 @@ pub async fn download_engine_model(
 }
 
 #[tauri::command]
-pub async fn preview_voice(
-    app: AppHandle,
+pub async fn preview_voice<R: tauri::Runtime>(
+    app: AppHandle<R>,
     runtime: tauri::State<'_, AppRuntime>,
     text: String,
     engine: String,
@@ -1105,7 +1143,7 @@ pub async fn preview_voice(
                 speed,
                 output_path: output.clone(),
                 model_dir: runtime.engine_model_dir(&engine),
-                options: runtime.engine_options(&engine),
+                options: runtime.engine_options(&engine, None),
             },
             move |response| {
                 emit_model_progress(
@@ -1127,8 +1165,8 @@ pub async fn preview_voice(
 }
 
 #[tauri::command]
-pub async fn queue_generation(
-    app: AppHandle,
+pub async fn queue_generation<R: tauri::Runtime>(
+    app: AppHandle<R>,
     runtime: tauri::State<'_, AppRuntime>,
     request: QueueGeneration,
 ) -> std::result::Result<String, String> {
@@ -1140,8 +1178,8 @@ pub async fn queue_generation(
 /// exists (the loop re-reads the anchor between sentences); otherwise starts
 /// a full-book job that begins at the anchor and wraps to earlier text.
 #[tauri::command]
-pub async fn anchor_generation(
-    app: AppHandle,
+pub async fn anchor_generation<R: tauri::Runtime>(
+    app: AppHandle<R>,
     runtime: tauri::State<'_, AppRuntime>,
     book_id: Uuid,
     profile_id: Uuid,
@@ -1149,6 +1187,7 @@ pub async fn anchor_generation(
 ) -> std::result::Result<String, String> {
     let runtime = runtime.inner().clone();
     *runtime.anchor.lock().expect("anchor lock") = Some(fragment_id);
+    *runtime.urgent.lock().expect("urgent lock") = Some(fragment_id);
     let active = runtime.anchor_job.lock().await.clone();
     if let Some((book, profile, job)) = active {
         if book == book_id
@@ -1181,8 +1220,8 @@ pub async fn set_generation_anchor(
     Ok(())
 }
 
-async fn spawn_generation(
-    app: AppHandle,
+async fn spawn_generation<R: tauri::Runtime>(
+    app: AppHandle<R>,
     runtime: AppRuntime,
     request: QueueGeneration,
 ) -> String {
@@ -1226,8 +1265,8 @@ pub async fn stop_voxtral_runtime(
     Ok(())
 }
 
-async fn run_generation(
-    app: &AppHandle,
+async fn run_generation<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     runtime: &AppRuntime,
     job_id: &str,
     request: QueueGeneration,
@@ -1289,19 +1328,6 @@ async fn run_generation(
         },
     )?;
     let worker = runtime.worker_for_engine(&profile.engine).await?;
-    let voxtral_discriminator = if profile.engine == "voxtral" {
-        let model_dir = runtime.engine_model_dir("voxtral");
-        let voice = profile.voice.clone();
-        let settings = runtime.settings();
-        Some(
-            tokio::task::spawn_blocking(move || {
-                voxtral_cache_discriminator(&model_dir, &voice, &settings)
-            })
-            .await??,
-        )
-    } else {
-        None
-    };
     let ordering: HashMap<Uuid, usize> = fragments
         .iter()
         .enumerate()
@@ -1336,8 +1362,29 @@ async fn run_generation(
         }
         fragment.spoken_text = normalize_for_speech(&fragment.source_text, &rules);
         fragment.cache_key = segment_cache_key(&fragment, &profile);
-        if let Some(discriminator) = &voxtral_discriminator {
-            fragment.cache_key = extend_cache_key(&fragment.cache_key, discriminator);
+        // The sentence the listener is actively waiting on (set by
+        // anchor_generation, never by the silent playhead-follow in
+        // set_generation_anchor) generates on Compatibility instead of the
+        // configured profile, so the first click never pays the Balanced/
+        // Quality torch.compile stall (DF-9). Folding the override into the
+        // discriminator keeps it a distinct cache entry from the properly
+        // profiled version, which naturally replaces it (cache-key mismatch
+        // triggers regeneration) the next time this sentence is generated
+        // without urgency.
+        let settings = runtime.settings();
+        let voxtral_profile_override = (profile.engine == "voxtral"
+            && settings.voxtral_profile != "compatibility"
+            && *runtime.urgent.lock().expect("urgent lock") == Some(fragment.id))
+        .then_some("compatibility");
+        if profile.engine == "voxtral" {
+            let model_dir = runtime.engine_model_dir("voxtral");
+            let discriminator = voxtral_cache_discriminator(
+                &model_dir,
+                &profile.voice,
+                &settings,
+                voxtral_profile_override,
+            )?;
+            fragment.cache_key = extend_cache_key(&fragment.cache_key, &discriminator);
         }
         if let Some(existing) = runtime.core.db.generated_segment(fragment.id, profile.id)? {
             if existing.cache_key == fragment.cache_key && existing.audio_path.exists() {
@@ -1401,7 +1448,8 @@ async fn run_generation(
                         speed: profile.speed,
                         output_path: temporary.clone(),
                         model_dir: runtime.engine_model_dir(&profile.engine),
-                        options: runtime.engine_options(&profile.engine),
+                        options: runtime
+                            .engine_options(&profile.engine, voxtral_profile_override),
                     },
                     move |response| {
                         let state = response.state.as_deref().unwrap_or("generating");
@@ -1758,4 +1806,172 @@ pub async fn sync_to_folder(
     )
     .map_err(command_error)?;
     Ok(destination.to_string_lossy().into_owned())
+}
+
+/// Product-path E2E (DF-34/DF-35): every prior benchmark and E2E measured or
+/// exercised the Python worker in isolation, so an 83-second per-job
+/// regression (DF-1) in the Rust orchestration went unnoticed until a live
+/// audit. This module drives the real commands — import, profile creation,
+/// generation — against `tauri::test`'s MockRuntime and the worker's mock
+/// engines, so the Rust side of the click-to-audio path has a headless,
+/// CI-runnable gate. Real-engine timing (the five latencies in the plan's
+/// measurement protocol) is a separate, GPU-gated exercise, not this test.
+#[cfg(test)]
+mod product_path_tests {
+    use super::*;
+    use audiobookgen_core::model::{CaptionMode, FootnoteMode, ImportSelection, TableMode};
+    use std::io::Write as _;
+    use std::time::Instant;
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipWriter};
+
+    fn write_fixture_epub(path: &Path) {
+        let file = std::fs::File::create(path).expect("create fixture epub");
+        let mut zip = ZipWriter::new(file);
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        let deflated =
+            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/epub+zip").unwrap();
+        zip.start_file("META-INF/container.xml", deflated).unwrap();
+        zip.write_all(br#"<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#).unwrap();
+        zip.start_file("EPUB/package.opf", deflated).unwrap();
+        zip.write_all(br#"<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">fixture</dc:identifier><dc:title>Product Path Fixture</dc:title><dc:language>en</dc:language></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="c1" href="chapter1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/></spine></package>"#).unwrap();
+        zip.start_file("EPUB/nav.xhtml", deflated).unwrap();
+        zip.write_all(br#"<html xmlns="http://www.w3.org/1999/xhtml"><body><nav epub:type="toc" xmlns:epub="http://www.idpf.org/2007/ops"><ol><li><a href="chapter1.xhtml">Chapter One</a></li></ol></nav></body></html>"#).unwrap();
+        zip.start_file("EPUB/chapter1.xhtml", deflated).unwrap();
+        zip.write_all(br#"<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter One</title></head><body><h1>Chapter One</h1><p>The quick brown fox jumps over the lazy dog. It was a bright and clear morning.</p></body></html>"#).unwrap();
+        zip.finish().unwrap();
+    }
+
+    /// Prefer an already-provisioned worker venv when this machine has one
+    /// (this app's real managed-python data directory, per `managed_python`),
+    /// so the test runs in milliseconds instead of bootstrapping a fresh
+    /// environment with uv on every run. Falls back to `AppRuntime`'s own
+    /// managed-python bootstrap otherwise, exactly like a first run on a
+    /// fresh machine (the path CI exercises).
+    fn prefer_provisioned_worker_python() {
+        if std::env::var_os("AUDIOBOOKGEN_PYTHON").is_some() {
+            return;
+        }
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let candidate =
+            PathBuf::from(home).join(".local/share/io.audiobookgen.desktop/worker-venv/bin/python");
+        if candidate.exists() {
+            // SAFETY: this test binary is single-threaded at startup and no
+            // other test reads AUDIOBOOKGEN_PYTHON concurrently.
+            unsafe { std::env::set_var("AUDIOBOOKGEN_PYTHON", candidate) };
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_generation_reaches_every_fragment_through_the_real_commands() {
+        // SAFETY: set once before any worker spawns in this test.
+        unsafe { std::env::set_var("AUDIOBOOKGEN_WORKER_MOCK", "1") };
+        prefer_provisioned_worker_python();
+
+        let temp = tempfile::TempDir::new().expect("temp data dir");
+        let runtime = AppRuntime::new(temp.path().join("data"), temp.path().join("resources"))
+            .expect("construct app runtime");
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        let epub_path = temp.path().join("fixture.epub");
+        write_fixture_epub(&epub_path);
+        let review = inspect_epub(&epub_path).expect("inspect fixture epub");
+        let selection = ImportSelection {
+            selected_chapter_indices: vec![0],
+            footnote_mode: FootnoteMode::Skip,
+            table_mode: TableMode::Skip,
+            caption_mode: CaptionMode::Skip,
+        };
+        let book = import_epub_impl(&runtime, review, selection).expect("import fixture book");
+        let profile = book.profiles.first().cloned().expect("default narrator profile");
+        // ensure_model() checks for real weights or this marker; mirrors what
+        // the mock engine's own ensure_model() writes after a mock download.
+        let model_dir = runtime.engine_model_dir(&profile.engine);
+        std::fs::create_dir_all(&model_dir).expect("create mock model dir");
+        std::fs::write(model_dir.join("MOCK_MODEL"), "mock").expect("write mock model marker");
+        let fragments = runtime
+            .core
+            .db
+            .fragments_for_book(book.summary.id)
+            .expect("fragments for fixture book");
+        assert!(!fragments.is_empty(), "fixture book produced no fragments");
+
+        let started = Instant::now();
+        let request = QueueGeneration {
+            book_id: book.summary.id,
+            profile_id: profile.id,
+            mode: GenerationMode::FullBook,
+            current_chapter_index: None,
+            selected_chapter_indices: Vec::new(),
+        };
+        let job_id = Uuid::new_v4().to_string();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        // Call run_generation directly (rather than through the fire-and-
+        // forget spawn_generation) so a worker or generation failure surfaces
+        // as a real error here instead of an unexplained missing segment.
+        run_generation(&handle, &runtime, &job_id, request, cancelled)
+            .await
+            .expect("generation job should succeed");
+        let elapsed = started.elapsed();
+
+        for fragment in &fragments {
+            let segment = runtime
+                .core
+                .db
+                .generated_segment(fragment.id, profile.id)
+                .expect("segment lookup")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "fragment {} has no generated segment after a full-book job",
+                        fragment.id
+                    )
+                });
+            assert!(
+                segment.audio_path.exists(),
+                "generated audio file missing on disk for fragment {}",
+                fragment.id
+            );
+        }
+        println!(
+            "product-path mock generation: {} fragments in {elapsed:?} (through real Tauri commands)",
+            fragments.len()
+        );
+    }
+
+    /// Regression guard for DF-1, measured against the real installed
+    /// weights rather than trusted on reasoning alone: the discriminator
+    /// must not re-hash the 8+ GB model file (83s measured on this machine
+    /// before the fix). Ignored by default since it depends on a real
+    /// Voxtral install; run explicitly with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires the real Voxtral model installed on this machine"]
+    fn real_voxtral_discriminator_is_fast_not_an_8gb_hash() {
+        let model_dir = PathBuf::from("/mnt/Big storage/AudiobookGen/models/voxtral-4b-tts");
+        if !model_dir.join("consolidated.safetensors").exists() {
+            eprintln!(
+                "skipping: real Voxtral weights not present at {}",
+                model_dir.display()
+            );
+            return;
+        }
+        let settings = AppSettings::default();
+        let voice = installed_voxtral_voices(&model_dir)
+            .into_iter()
+            .next()
+            .expect("at least one installed voice embedding on this machine");
+        let started = Instant::now();
+        voxtral_cache_discriminator(&model_dir, &voice, &settings, None)
+            .expect("discriminator should succeed against the real model dir");
+        let elapsed = started.elapsed();
+        println!("real Voxtral discriminator: {elapsed:?} against the real 8+ GB weights file");
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "discriminator took {elapsed:?}; DF-1 regression (per-job full-file hash) may have returned"
+        );
+    }
 }

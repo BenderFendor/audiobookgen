@@ -3,6 +3,66 @@
 This log records user-visible behavior, architecture, setup, and verification
 changes so release notes remain grounded in repository artifacts.
 
+## 2026-07-16 — M7 first-sound-fast + M8 product-path harness
+
+Implements the first slice of `docs/plans/product-hardening.md` (M7, M8).
+
+- **DF-1**: `voxtral_cache_discriminator` no longer re-hashes the 8+ GB
+  weights file or the voice embedding on every `run_generation` call; it uses
+  `(size, mtime)` identity instead, mirroring the quantized-weight cache's own
+  discriminator. Measured on this machine against the real installed model:
+  **83 s → 903 µs**. `file_sha256` removed (dead code).
+- **DF-9**: first-click profile mixing. `anchor_generation` (fired only when
+  a click found no cached audio) marks that one fragment "urgent"; if the
+  book's configured Voxtral profile isn't already `compatibility`,
+  `run_generation` generates exactly that fragment on `compatibility` to skip
+  the Balanced/Quality `torch.compile` stall, while the rest of the buffer
+  keeps the configured profile. The override is folded into the cache key, so
+  a later non-urgent pass naturally regenerates the sentence at full quality
+  (cache-key mismatch triggers regeneration, same as any other parameter
+  change).
+- **DF-24 (late validation)**: `create_narration_profile` now rejects Voxtral
+  voice names that aren't in the installed embedding directory, instead of
+  accepting any string up to 80 characters. `list_engine_status` and profile
+  creation now share one `installed_voxtral_voices` helper.
+- **DF-8**: the reader's wait-for-narration loop now surfaces the worker's
+  live progress state (`"Voxtral worker: quantizing backbone layer 12/26"`,
+  etc.) instead of a static "Preparing narration…" message, and the give-up
+  condition changed from a fixed 180 s total wait to "no new progress event
+  for 120 s" — a slow-but-progressing job (quant-cache rebuild, cold compile)
+  no longer gets killed just for taking a while.
+- **M8**: the `AppHandle`-consuming functions in `commands.rs`
+  (`emit_model_progress`, `download_engine_model`, `preview_voice`,
+  `queue_generation`, `anchor_generation`, `spawn_generation`,
+  `run_generation`) are now generic over `R: tauri::Runtime`, enabling a
+  headless product-path test against `tauri::test`'s `MockRuntime`:
+  `commands::product_path_tests::mock_generation_reaches_every_fragment_through_the_real_commands`
+  builds a fixture EPUB, imports it, and drives `run_generation` with
+  `AUDIOBOOKGEN_WORKER_MOCK=1`, asserting every fragment gets a cached
+  segment. This is the first E2E that exercises the Rust orchestration layer
+  (prior E2E coverage — `voxtral-worker-e2e` — only drove the Python worker
+  protocol directly, which is exactly how DF-1 went unnoticed). An
+  `#[ignore]`d companion test measures the real discriminator against the
+  actual installed Voxtral weights on GPU-equipped machines.
+- Not done in this pass (remaining M7/M8 scope, tracked in the plan): the
+  full product-path measurement protocol's five latency numbers on real
+  hardware, the blinded listening gate (old plan's B2), and CI wiring for the
+  new mock-engine test.
+
+## 2026-07-16 — Product audit and hardening plan
+
+- Live-session audit found the first-click Voxtral path broken in practice:
+  an 8 GB weights re-hash at every generation job start (measured 83 s on
+  the HDD models volume) plus quant-cache load and the Balanced compile
+  stall exceed the reader's 180 s give-up deadline. Root process cause: all
+  speed benchmarks bypass the Rust command path, so the regression was
+  invisible to the ledger.
+- Wrote `docs/plans/product-hardening.md`: a 36-entry design-flaw register
+  (orchestration, playback engine, reader, narrator data model, worker
+  protocol, storage, verification) and milestones M7-M16 extending the
+  Voxtral speed plan, including the outstanding B2 listening gate and a
+  product-path E2E harness as the new evidence bar. No code changed.
+
 ## 2026-07-16 — Voxtral speed program: solver speedups and streaming playback
 
 - Batched CFG conditional/unconditional velocity passes (8 batch-1 → 4

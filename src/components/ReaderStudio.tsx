@@ -41,6 +41,8 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
   const [contextMenu, setContextMenu] = useState<{ fragmentId: string; x: number; y: number } | null>(null);
   const [profileDraft, setProfileDraft] = useState<CreateNarrationProfile | null>(null);
   const wordTimingsRef = useRef<WordTiming[]>([]);
+  const generationRef = useRef<GenerationProgress | null>(generation);
+  useEffect(() => { generationRef.current = generation; }, [generation]);
   const activeChapter = useMemo(() => book.chapters.find((chapter) => chapter.index === chapterIndex) ?? book.chapters[0], [book.chapters, chapterIndex]);
   useEffect(() => { currentFragmentRef.current = currentFragmentId; }, [currentFragmentId]);
   useEffect(() => { linkedRef.current = linked; }, [linked]);
@@ -149,17 +151,34 @@ export function ReaderStudio({ book, generation, onBack, onRefresh }: Props) {
       // Not generated yet: anchor a fill job to this sentence and wait for
       // it instead of dead-ending. Newer clicks supersede the wait.
       setMessage("Preparing narration from this sentence…");
+      let job: string;
       try {
-        const job = await api.anchorGeneration(book.summary.id, activeProfile.id, fragmentId);
+        job = await api.anchorGeneration(book.summary.id, activeProfile.id, fragmentId);
         setJobId(job);
       } catch (error) {
         setMessage(String(error));
         return;
       }
-      const deadline = Date.now() + 180_000;
+      // The worker reports granular progress states while it loads and
+      // synthesizes ("loading-int4", "compiling-balanced", …); as long as
+      // those keep arriving the job is alive, however long it takes. Only
+      // silence — no new progress event for this job — means give up.
+      let lastProgressAt = Date.now();
+      let lastSeenProgress = generationRef.current;
+      const noProgressTimeoutMs = 120_000;
       while (!segment) {
         if (requestId !== playbackRequestRef.current) return;
-        if (Date.now() > deadline) {
+        const latest = generationRef.current;
+        if (latest !== lastSeenProgress && latest?.jobId === job) {
+          lastSeenProgress = latest;
+          lastProgressAt = Date.now();
+          if (latest.state === "failed" || latest.state === "cancelled") {
+            setMessage(latest.message ?? "Narration generation stopped before this sentence was ready.");
+            return;
+          }
+          setMessage(latest.message ?? `Preparing narration… (${latest.completed}/${latest.total} sentences ready)`);
+        }
+        if (Date.now() - lastProgressAt > noProgressTimeoutMs) {
           setMessage("Narration is taking too long to prepare. Check the Models page and the generation job.");
           return;
         }

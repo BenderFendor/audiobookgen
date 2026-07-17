@@ -5,6 +5,9 @@ and playback starts near-instantly, stays ahead of the listener, and never
 stutters. Workstream A is a just-in-time streaming scheduler; workstream B is
 raw throughput on the RTX 3060, ordered profile-first with ConvRot W4A4 as a
 measured later phase, never a default. Status: DRAFT — iterate here.
+Superseded for scope: `product-hardening.md` continues this plan at M7+,
+absorbs the outstanding B2 listening gate and live desktop E2E, and tracks
+the product-path defects this plan's benchmarks could not see.
 
 ## 1. Where we are today (measured, 2026-07-16, RTX 3060 12 GB)
 
